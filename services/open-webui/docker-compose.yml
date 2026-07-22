@@ -1,0 +1,46 @@
+# Open WebUI → Ollama local (qwen-uncensored :8780)
+# UI: http://127.0.0.1:3080
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: open-webui
+    restart: unless-stopped
+    ports:
+      - "3080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      OLLAMA_BASE_URL: http://host.docker.internal:8780
+      DEFAULT_MODELS: qwen3-local:30b
+      WEBUI_AUTH: "False"
+      ENABLE_SIGNUP: "False"
+      WEBUI_NAME: Iron Open WebUI
+      # CPU-only: avoid parallel side-jobs + huge tool schemas that stall 30B MoE
+      ENABLE_TITLE_GENERATION: "False"
+      ENABLE_TAGS_GENERATION: "False"
+      ENABLE_FOLLOW_UP_GENERATION: "False"
+      ENABLE_SEARCH_QUERY_GENERATION: "False"
+      ENABLE_RETRIEVAL_QUERY_GENERATION: "False"
+      ENABLE_AUTOCOMPLETE_GENERATION: "False"
+      ENABLE_TOOLS: "False"
+      ENABLE_CODE_INTERPRETER: "False"
+      ENABLE_IMAGE_GENERATION: "False"
+      ENABLE_WEB_SEARCH: "False"
+      ENABLE_RAG_WEB_SEARCH: "False"
+      ENABLE_RAG_LOCAL_WEB_FETCH: "False"
+      RAG_EMBEDDING_ENGINE: ""
+      # Keep prompts short on CPU
+      CHUNK_SIZE: "500"
+      RAG_TOP_K: "0"
+    volumes:
+      - open_webui_data:/app/backend/data
+    mem_limit: 2g
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  open_webui_data:

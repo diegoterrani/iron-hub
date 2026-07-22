@@ -1,0 +1,24 @@
+[Unit]
+Description=Iron Security — Qwen local (Ollama OpenAI-compatible :8780)
+Documentation=file:///home/kali/qwen-uncensored/README.md
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=kali
+Group=docker
+WorkingDirectory=/home/kali/qwen-uncensored
+Environment=HOME=/home/kali
+Environment=DOCKER_CONFIG=/home/kali/.docker
+ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStartPost=/bin/bash -c 'for i in $(seq 1 60); do curl -sf http://127.0.0.1:8780/api/tags >/dev/null && break; sleep 2; done; curl -sf http://127.0.0.1:8780/api/generate -d "{\"model\":\"qwen3-local:30b\",\"keep_alive\":\"24h\"}" >/dev/null || true'
+ExecStop=/usr/bin/docker compose down
+ExecReload=/usr/bin/docker compose up -d --remove-orphans
+TimeoutStartSec=600
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

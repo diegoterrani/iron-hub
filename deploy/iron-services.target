@@ -1,0 +1,24 @@
+[Unit]
+Description=Iron Security — All Platform Services
+Documentation=file:///home/kali/iron-hub/README.md
+Wants=\
+  docker.service \
+  nginx.service \
+  iron-hub.service \
+  mosint.service \
+  maverick.service \
+  iron-pentest-api.service \
+  iron-pentest-ui.service \
+  darkweb-tracker.service \
+  o365-csirt.service \
+  moneyprinterturbo.service \
+  robin.service \
+  python-dark-web-tor.service \
+  botlivebetting.service \
+  qwen-uncensored.service \
+  open-webui.service
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Install]
+WantedBy=multi-user.target

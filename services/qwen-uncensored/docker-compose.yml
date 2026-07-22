@@ -1,0 +1,37 @@
+# Qwen3 Abliterated (uncensored) — OpenAI-compatible API for local tools
+# Base URL: http://<host>:8780/v1
+# Model:    huihui_ai/qwen3-abliterated:14b  (fits Tesla T4 16GB)
+# Host:     g4dn.xlarge — 16GB RAM + 8GB swap + 1× T4
+services:
+  qwen:
+    image: ollama/ollama:latest
+    container_name: qwen-uncensored
+    restart: unless-stopped
+    ports:
+      - "8780:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_KEEP_ALIVE: 24h
+      OLLAMA_MAX_LOADED_MODELS: 1
+      OLLAMA_NUM_PARALLEL: 1
+      # Let Ollama use GPU; keep context modest for T4 VRAM
+      OLLAMA_FLASH_ATTENTION: "1"
+      OLLAMA_CONTEXT_LENGTH: 4096
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    # Leave headroom for host + Open WebUI on 16GB RAM
+    mem_limit: 10g
+    shm_size: 1g
+    gpus: all
+
+volumes:
+  ollama_data:

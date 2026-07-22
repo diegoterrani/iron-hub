@@ -1,0 +1,21 @@
+[Unit]
+Description=Iron Security Command Hub
+Documentation=file:///home/kali/iron-hub/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kali
+Group=kali
+WorkingDirectory=/home/kali/iron-hub
+Environment=IRON_HUB_PORT=3900
+ExecStart=/home/kali/iron-hub/iron-hub-server
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=iron-hub
+
+[Install]
+WantedBy=multi-user.target
