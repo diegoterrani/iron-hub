@@ -1,0 +1,22 @@
+services:
+  casino-bot:
+    build: .
+    image: iron-casino-bot:lab
+    container_name: iron-casino-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      STATUS_HOST: 0.0.0.0
+      STATUS_PORT: "8011"
+      DB_PATH: /app/data/bebra.db
+    ports:
+      - "127.0.0.1:8011:8011"
+    volumes:
+      - ./data:/app/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8011/api/health')"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

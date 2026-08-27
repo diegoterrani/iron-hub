@@ -2,10 +2,13 @@
 node_modules/
 
 # Build artifacts (regenerate with npm run build)
-dist/
+/dist/
 api/dist/
-assets/
+/assets/
 *.tsbuildinfo
+# Satellite frontends versionados (QA clone sem npm build)
+!services/**/dashboard/dist/
+!services/**/dashboard/dist/**
 
 # Compiled binary (rebuild: cd api && go build -o ../iron-hub-server .)
 iron-hub-server

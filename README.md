@@ -40,14 +40,18 @@ Fluxo: **Autenticação → Hub → Ferramenta** (portas internas só em `127.0.
 | Qwen3.5-27B n0ctyx Q5 / llama.cpp | `services/qwen-uncensored/` | 8080 (`qwen3.5-27b-uncensored-aggressive`, ctx 262144) |
 | Open WebUI | `services/open-webui/` | 3080 (workspace `qwen-local`) |
 | Iron Lab Agent | `services/iron-lab-agent/` | 8793 (local/docker bridges) |
+| Casino Integrity (BetBonusAI) | `services/betbonus/` | 8010 |
+| Casino Bot Lab | `services/casino-bot/` | 8011 |
 
 ```bash
 sudo cp deploy/iron-hub.service deploy/iron-services.target /etc/systemd/system/
 sudo cp services/qwen-uncensored/deploy/qwen-uncensored.service /etc/systemd/system/
 sudo cp services/open-webui/deploy/open-webui.service /etc/systemd/system/
 sudo cp services/iron-lab-agent/deploy/iron-lab-agent.service /etc/systemd/system/
+sudo cp services/betbonus/deploy/betbonus.service /etc/systemd/system/
+sudo cp services/casino-bot/deploy/casino-bot.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now qwen-uncensored open-webui iron-lab-agent iron-hub
+sudo systemctl enable --now qwen-uncensored open-webui iron-lab-agent betbonus casino-bot iron-hub
 # Registrar tool na WebUI: services/iron-lab-agent/install.sh
 ```
 

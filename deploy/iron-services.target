@@ -18,7 +18,9 @@ Wants=\
   botlivebetting.service \
   qwen-uncensored.service \
   open-webui.service \
-  iron-lab-agent.service
+  iron-lab-agent.service \
+  betbonus.service \
+  casino-bot.service
 After=network-online.target docker.service
 Wants=network-online.target
 

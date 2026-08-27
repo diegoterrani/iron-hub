@@ -1,0 +1,31 @@
+[Unit]
+Description=Iron Guard — BetBonus AI (casino integrity console)
+Documentation=file:///home/ubuntu/iron-tools/iron-hub/services/betbonus/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/iron-tools/iron-hub/services/betbonus
+Environment=PATH=/home/ubuntu/iron-tools/iron-hub/services/betbonus/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EnvironmentFile=-/home/ubuntu/iron-tools/iron-hub/services/betbonus/.env
+# Optional shared Iron Red Team LLM (OpenRouter) — same secrets as Maverick/Strix
+EnvironmentFile=-/home/ubuntu/iron-tools/Iron-maverick-agent-pentest/console/server/.env
+Environment=PLAYWRIGHT_BROWSERS_PATH=/home/ubuntu/iron-tools/iron-hub/services/betbonus/.playwright
+Environment=INTEGRITY_SKIP_BROWSER=0
+ExecStart=/home/ubuntu/iron-tools/iron-hub/services/betbonus/.venv/bin/python -m src.main api --host 127.0.0.1 --port 8010
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/iron-tools/iron-hub/services/betbonus
+ReadOnlyPaths=/home/ubuntu/iron-tools/Iron-maverick-agent-pentest/console/server
+LimitNOFILE=4096
+
+[Install]
+WantedBy=multi-user.target

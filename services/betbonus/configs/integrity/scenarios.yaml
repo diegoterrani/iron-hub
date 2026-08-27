@@ -1,0 +1,207 @@
+# Casino Online integrity catalog — produto inteiro, não só bônus.
+# Defaults seguros: PROBE (sem stake/saque). Kill-switch por casa.
+
+safety:
+  default_mode: PROBE
+  max_lab_stake_brl: 5.0
+  confirm_real_bet_default: false
+  confirm_real_withdraw_default: false
+  kill_switch:
+    pagol_bet_br: false
+    4play_bet_br: false
+    4play: false
+
+axes:
+  - session
+  - wallet
+  - catalog
+  - slots
+  - crash
+  - table
+  - timer
+  - promo
+  - jackpot
+  - withdraw
+
+houses:
+  - pagol_bet_br
+  - 4play_bet_br
+  - 4play
+
+scenarios:
+  - id: session.validate
+    axis: session
+    title: Validar sessão autenticada
+    worker: session_validate
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: user_id/claims + currency sem vazar token
+
+  - id: session.zombie_after_launch
+    axis: session
+    title: Wallet após launch REAL (sessão zumbi)
+    worker: session_zombie_launch
+    mode: PROBE
+    houses: [pagol_bet_br, 4play]
+    evidence: wallet before/after start_game sem stake no provider
+
+  - id: wallet.scale_cents
+    axis: wallet
+    title: Escala centavos vs reais no ledger
+    worker: wallet_scale
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: raw balance vs snapshot.balance (off-by-100)
+
+  - id: wallet.double_fetch
+    axis: wallet
+    title: Consistência de dois fetches seguidos
+    worker: wallet_double_fetch
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: delta entre snapshots consecutivos sem ação do lab
+
+  - id: catalog.list_by_category
+    axis: catalog
+    title: Catálogo por categoria (slots/crash/table)
+    worker: catalog_list
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: game_id + provider por categoria
+
+  - id: catalog.launch_free_vs_real
+    axis: catalog
+    title: Launch FREE vs REAL
+    worker: catalog_launch_modes
+    mode: PROBE
+    houses: [pagol_bet_br, 4play]
+    evidence: salsa url/type para FREE e REAL
+
+  - id: catalog.launch_bonus_flag
+    axis: catalog
+    title: Launch com useBonusBalance true/false
+    worker: catalog_bonus_flag
+    mode: PROBE
+    houses: [pagol_bet_br, 4play]
+    evidence: ambos flags lançam ou um é bloqueado
+
+  - id: slots.soft_launch
+    axis: slots
+    title: Soft-launch de slots (sem spin no provider)
+    worker: slots_soft_launch
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: start_game ou UNSUPPORTED explícito
+
+  - id: slots.freespin_inventory
+    axis: slots
+    title: Inventário de free spins / extra rounds
+    worker: slots_freespins
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: itens FS na API de bônus da conta
+
+  - id: slots.bonus_buy_gap
+    axis: slots
+    title: Bonus buy / autoplay — gap de automação
+    worker: slots_bonus_buy_gap
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: SEMI_AUTO até API oficial de operador
+
+  - id: slots.actor_surface
+    axis: slots
+    title: Superfície de ator (launch cash/bônus, demo, race, saldo Salsa)
+    worker: slots_actor_surface
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: flags useBonusBalance, demo, double start.do, mismatch Salsa vs wallet
+
+  - id: slots.provider_map
+    axis: slots
+    title: Endpoints iframe do provedor (Salsa → cliente)
+    worker: slots_provider_map
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: hosts/paths/WS do iframe sem query; mismatch catálogo vs slug Salsa
+
+  - id: slots.lab_play
+    axis: slots
+    title: 1 spin na conta lab (emulação de jogador, teto R$5)
+    worker: slots_lab_play
+    mode: CONFIRM_STAKE
+    requires_stake: true
+    houses: [pagol_bet_br, 4play]
+    evidence: wallet delta após clique/Space no cliente; sem WS do provider
+
+  - id: crash.high_ev_launch
+    axis: crash
+    title: Launch high-EV (crash/mines/plinko)
+    worker: crash_launch
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: sessão Salsa ou UNSUPPORTED
+
+  - id: crash.cashout_model
+    axis: crash
+    title: Modelo teórico de cashout (não prevê RNG)
+    worker: crash_offline_model
+    mode: DRY
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: EV vs house edge; live cashout = SEMI
+
+  - id: table.catalog_launch
+    axis: table
+    title: Blackjack/roleta/baccarat no catálogo
+    worker: table_catalog
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: launch house-side se API existir
+
+  - id: table.offline_ev
+    axis: table
+    title: Sims determinísticos de mesa (risco, não aposta)
+    worker: table_offline_ev
+    mode: DRY
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: basic strategy / banker / martingale ruin
+
+  - id: timer.clock_skew
+    axis: timer
+    title: Clock skew cliente vs fetched_at da wallet
+    worker: timer_clock_skew
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: delta de relógio e latência de snapshot
+
+  - id: timer.double_submit
+    axis: timer
+    title: Double-submit de snapshot (race de ledger)
+    worker: timer_double_submit
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: dois GET quase simultâneos
+
+  - id: promo.bonus_rules
+    axis: promo
+    title: Regras de bônus expostas (eixo promo, não o produto)
+    worker: promo_rules
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: rollover/maxBet/gameTypes
+
+  - id: jackpot.catalog
+    axis: jackpot
+    title: Superfície jackpot/torneio no catálogo
+    worker: jackpot_catalog
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: hits de busca jackpot
+
+  - id: withdraw.preflight
+    axis: withdraw
+    title: Preflight de saque de ganhos de cassino
+    worker: withdraw_preflight
+    mode: PROBE
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
+    evidence: gates KYC/PIX/PENDING sem enviar saque

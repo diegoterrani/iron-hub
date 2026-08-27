@@ -52,3 +52,4 @@ set -a && source .env && set +a
 - Health checks são best-effort; falha de um serviço não derruba o hub
 - Proxy reescreve redirects e paths absolutos comuns (`/api`, `/assets`, …)
 - Frontends Iron usam `gatewayPrefix()` para prefixar fetches sob `/t/{id}`
+- iGaming no repo: `services/betbonus/` (:8010) e `services/casino-bot/` (:8011)
