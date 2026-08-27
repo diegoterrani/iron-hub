@@ -1,22 +1,23 @@
 [Unit]
-Description=Iron Security — Open WebUI (chat LLM local)
-Documentation=file:///home/kali/open-webui/README.md
-Requires=docker.service qwen-uncensored.service
-After=docker.service qwen-uncensored.service network-online.target
+Description=Iron Security — Open WebUI (chat via OpenRouter)
+Documentation=file:///home/ubuntu/iron-tools/iron-hub/services/open-webui/README.md
+Requires=docker.service
+After=docker.service network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-User=kali
-Group=docker
-WorkingDirectory=/home/kali/open-webui
-Environment=HOME=/home/kali
-Environment=DOCKER_CONFIG=/home/kali/.docker
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=docker
+WorkingDirectory=/home/ubuntu/iron-tools/iron-hub/services/open-webui
+Environment=HOME=/home/ubuntu
 ExecStart=/usr/bin/docker compose up -d --remove-orphans
+ExecStartPost=/bin/bash -c 'set -a; source /home/ubuntu/iron-tools/iron-hub/services/open-webui/.env; set +a; /home/ubuntu/bin/open-webui-sync-model'
 ExecStop=/usr/bin/docker compose down
-ExecReload=/usr/bin/docker compose up -d --remove-orphans
-TimeoutStartSec=600
+ExecReload=/bin/bash -c '/usr/bin/docker compose up -d --remove-orphans; set -a; source /home/ubuntu/iron-tools/iron-hub/services/open-webui/.env; set +a; /home/ubuntu/bin/open-webui-sync-model'
+TimeoutStartSec=300
 TimeoutStopSec=120
 
 [Install]

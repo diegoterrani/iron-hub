@@ -1,0 +1,22 @@
+[Unit]
+Description=Iron Security — Lab Agent (host API for Open WebUI Tools)
+Documentation=file:///home/ubuntu/iron-tools/iron-hub/services/iron-lab-agent/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/home/ubuntu/iron-tools/iron-hub/services/iron-lab-agent
+EnvironmentFile=-/home/ubuntu/iron-tools/iron-hub/services/iron-lab-agent/.env
+Environment=IRON_LAB_CONFIG=/home/ubuntu/iron-tools/iron-hub/services/iron-lab-agent/config.json
+ExecStart=/usr/bin/python3 /home/ubuntu/iron-tools/iron-hub/services/iron-lab-agent/agent.py
+Restart=on-failure
+RestartSec=3
+# Host agent is local-only; still harden process a bit
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

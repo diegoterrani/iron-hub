@@ -4,6 +4,7 @@ node_modules/
 # Build artifacts (regenerate with npm run build)
 dist/
 api/dist/
+assets/
 *.tsbuildinfo
 
 # Compiled binary (rebuild: cd api && go build -o ../iron-hub-server .)
@@ -20,3 +21,5 @@ iron-hub-server
 .vscode/
 *.swp
 *~
+.env
+data/

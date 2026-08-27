@@ -1,0 +1,19 @@
+[Unit]
+Description=Warm-up ping for local Qwen llama-server (GPU/Vulkan ready)
+After=qwen-uncensored.service
+Requires=qwen-uncensored.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+Environment=API_KEY_FILE=/home/ubuntu/.config/llama/api_key
+Environment=ALIAS=qwen3.5-27b-uncensored-aggressive
+ExecStart=/home/ubuntu/bin/qwen-warmup
+RemainAfterExit=yes
+TimeoutStartSec=1800
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=qwen-uncensored.service multi-user.target

@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { RefreshCw } from 'lucide-react';
+import { useEffect, useMemo, useState } from 'react';
+import { KeyRound, LogOut, RefreshCw } from 'lucide-react';
 import {
   SERVICES,
   CATEGORY_META,
@@ -8,13 +8,71 @@ import {
 import { useServiceHealth } from './hooks/useServiceHealth';
 import { CategoryIcon } from './components/Icons';
 import { ServiceCard } from './components/ServiceCard';
+import { TwoFAPanel } from './components/TwoFAPanel';
+import { twoFAStatus } from './auth/api';
+import { useAuth } from './auth/useAuth';
+import { Login } from './pages/Login';
 
 const ALL_CATEGORIES = Object.keys(CATEGORY_META) as ServiceCategory[];
 
-export function Hub() {
+export function App() {
+  const auth = useAuth();
+
+  if (auth.loading) {
+    return (
+      <div className="auth-boot">
+        <div className="auth-boot-spinner" />
+        <span>Verificando sessão…</span>
+      </div>
+    );
+  }
+
+  if (!auth.user) {
+    return (
+      <Login
+        onLogin={auth.login}
+        onVerify2FA={auth.verify2FA}
+        onCancel2FA={auth.cancel2FA}
+        pending2FA={Boolean(auth.pending2FA)}
+        error={auth.error}
+      />
+    );
+  }
+
+  // After login (e.g. nginx auth_request → /console/?next=/go/open-webui)
+  // Only follow gateway entry points — never OWUI internals (/error, /auth, /_app, …)
+  const next = new URLSearchParams(window.location.search).get('next');
+  const nextOk =
+    !!next &&
+    next.startsWith('/') &&
+    !next.startsWith('//') &&
+    (next.startsWith('/go/') || next.startsWith('/t/'));
+
+  if (nextOk && next) {
+    window.location.replace(next);
+    return (
+      <div className="auth-boot">
+        <div className="auth-boot-spinner" />
+        <span>Abrindo ferramenta…</span>
+      </div>
+    );
+  }
+
+  return <Hub user={auth.user} onLogout={auth.logout} />;
+}
+
+function Hub({ user, onLogout }: { user: string; onLogout: () => Promise<void> }) {
   const [filter, setFilter] = useState<ServiceCategory | 'all'>('all');
   const [search, setSearch] = useState('');
+  const [show2FA, setShow2FA] = useState(false);
+  const [twoFAOn, setTwoFAOn] = useState(false);
   const { health, loading, lastCheck, refresh } = useServiceHealth();
+
+  useEffect(() => {
+    void twoFAStatus()
+      .then((s) => setTwoFAOn(s.enabled))
+      .catch(() => setTwoFAOn(false));
+  }, []);
 
   const webServices = SERVICES.filter((s) => s.type === 'web' || s.type === 'api');
   const onlineCount = webServices.filter((s) => health[s.id] === 'online').length;
@@ -46,12 +104,16 @@ export function Hub() {
     }));
   }, [filtered]);
 
-  const now = new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const now = new Date().toLocaleTimeString('pt-BR', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
 
   return (
     <div className="hub">
       <header className="hub-header">
-        <div className="hub-brand">
+        <a className="hub-brand" href="/console/" title="Iron Hub">
           <div className="hub-brand-icon">
             <svg width="18" height="18" viewBox="0 0 32 32" fill="none">
               <path d="M8 22V10l8-4 8 4v12l-8 4-8-4z" stroke="#00D9FF" strokeWidth="1.5" />
@@ -59,9 +121,9 @@ export function Hub() {
           </div>
           <div>
             <h1>Iron Security</h1>
-            <span>Command Hub v1.0</span>
+            <span>Command Hub v1.3 · gateway</span>
           </div>
-        </div>
+        </a>
         <div className="hub-header-meta">
           <input
             className="search-input"
@@ -70,6 +132,15 @@ export function Hub() {
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
+          <span className="hub-user" title="Sessão autenticada">
+            {user}
+          </span>
+          <span
+            className={`hub-2fa-badge ${twoFAOn ? 'hub-2fa-badge--on' : 'hub-2fa-badge--off'}`}
+            title={twoFAOn ? '2FA ativo' : '2FA desativado — clique em 2FA para ativar'}
+          >
+            2FA {twoFAOn ? 'ON' : 'OFF'}
+          </span>
           <span className="clock">{now}</span>
           <button
             className={`refresh-btn ${loading ? 'spinning' : ''}`}
@@ -80,15 +151,39 @@ export function Hub() {
             <RefreshCw size={14} strokeWidth={1.5} />
             Atualizar
           </button>
+          <button
+            className="refresh-btn"
+            type="button"
+            onClick={() => setShow2FA(true)}
+            title="Configurar 2FA"
+          >
+            <KeyRound size={14} strokeWidth={1.5} />
+            2FA
+          </button>
+          <button
+            className="logout-btn"
+            type="button"
+            onClick={() => void onLogout()}
+            title="Encerrar sessão"
+          >
+            <LogOut size={14} strokeWidth={1.5} />
+            Sair
+          </button>
         </div>
       </header>
+
+      <TwoFAPanel
+        open={show2FA}
+        onClose={() => setShow2FA(false)}
+        onStatusChange={setTwoFAOn}
+      />
 
       <main className="hub-main">
         <section className="hero">
           <h2>Central de Operações</h2>
           <p>
-            Painel unificado de todas as ferramentas Iron Security e Lucky Gaming.
-            Acesso rápido, status em tempo real e visão operacional consolidada.
+            Acesso unificado via gateway autenticado. O browser fala só com o Hub;
+            as ferramentas permanecem em loopback interno.
           </p>
         </section>
 
@@ -162,7 +257,7 @@ export function Hub() {
       </main>
 
       <footer className="hub-footer">
-        <span>Iron Security / Lucky Gaming — SOC Operations</span>
+        <span>Iron Security — Auth → Hub → Ferramenta</span>
         <span>
           {lastCheck
             ? `Health check: ${new Date(lastCheck).toLocaleTimeString('pt-BR')}`

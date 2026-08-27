@@ -2,33 +2,53 @@
 
 ## Stack
 - **Frontend:** React 19 + Vite + TypeScript (`src/`)
-- **Backend:** Go (`api/main.go`) — health probes + static file server
+- **Backend:** Go (`api/main.go`) — auth session, health probes, reverse-proxy gateway, static SPA
 - **Port:** `3900` (`IRON_HUB_PORT`)
 
-## Arquitetura
+## Auth → Hub → Ferramenta
 ```
-Browser → iron-hub-server :3900
-           ├─ /           SPA (Vite build embutido em api/dist)
-           ├─ /api/services
-           └─ /api/health  → probes paralelos nos serviços registrados
+Browser
+  └─ login (cookie HttpOnly iron_session)
+       └─ Iron Hub :3900
+            ├─ /                     SPA (login ou catálogo)
+            ├─ /hub/api/*            control plane (auth)
+            └─ /t/{tool-id}/*  ──►   127.0.0.1:{porta interna}
 ```
+
+Ferramentas escutam só em **loopback**. O browser nunca recebe host:porta interno.
+
+## Credenciais locais
+Arquivo `.env` (não commitado):
+
+| Variável | Descrição |
+|----------|-----------|
+| `IRON_HUB_USER` | usuário local (default `iron`) |
+| `IRON_HUB_PASS` | senha |
+| `IRON_HUB_SESSION_SECRET` | HMAC da sessão |
+
+Senha atual também em `../.hub-password` neste host.
 
 ## Comandos
 ```bash
 npm ci && npm run build
 rm -rf api/dist && cp -r dist api/dist
 cd api && go build -o ../iron-hub-server .
-./start.sh
+set -a && source .env && set +a
+./iron-hub-server
 # ou: sudo systemctl restart iron-hub.service
 ```
 
-## Serviços satellite (deploy)
-- `services/open-webui/` — UI LLM em `:3080` (Ollama/qwen)
-- `services/qwen-uncensored/` — Ollama local em `:8780`
-
-## Registry
-Fonte de verdade dos cards: `src/data/services.ts` + lista espelhada em `api/main.go`.
+## Endpoints
+| Método | Path | Auth | Descrição |
+|--------|------|------|-----------|
+| POST | `/hub/api/login` | não | `{username,password}` → cookie |
+| POST | `/hub/api/logout` | sim | limpa sessão |
+| GET | `/hub/api/me` | sim | usuário atual |
+| GET | `/hub/api/health` | sim | probes internos |
+| GET | `/hub/api/services` | sim | catálogo sem URLs internas |
+| * | `/t/{id}/…` | sim | proxy strip-prefix → ferramenta |
 
 ## Pontos de atenção
 - Health checks são best-effort; falha de um serviço não derruba o hub
-- Sem autenticação — lab interno / firewall de borda
+- Proxy reescreve redirects e paths absolutos comuns (`/api`, `/assets`, …)
+- Frontends Iron usam `gatewayPrefix()` para prefixar fetches sob `/t/{id}`

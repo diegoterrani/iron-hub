@@ -1,74 +1,50 @@
-# Qwen3 Abliterated (uncensored) — local API (GPU)
+# Qwen3.5-27B Instruct-Uncensored (n0ctyx) — local API (llama.cpp)
 
-OpenAI-compatible endpoint for Iron tools / MAVERICK on **g4dn.xlarge** (16 GB RAM + Tesla T4 16 GB).
+OpenAI-compatible endpoint for Iron Hub tools / MAVERICK / Open WebUI.
+
+Runtime: **llama.cpp** (Vulkan, dual AMD V520) via `qwen-uncensored.service`.
 
 ## Endpoint
 
 | Setting | Value |
 |---|---|
-| Base URL | `http://127.0.0.1:8780/v1` |
-| Model (alias) | `qwen3-local:14b` |
-| Upstream | `huihui_ai/qwen3-abliterated:14b` |
-| Family | Qwen3 abliterated · ~9 GB Q4 · `/no_think` |
-| API key | any non-empty string (e.g. `local-secret`) |
+| Base URL | `http://127.0.0.1:8080/v1` |
+| Model (alias) | `qwen3.5-27b-uncensored-aggressive` (legacy alias kept for Strix) |
+| Weights | `/nvme/models/Qwen3.5-27B-Instruct-Uncensored/…-Q5_K_M.gguf` |
+| Source | `n0ctyx/Qwen3.5-27B-Instruct-Uncensored` |
+| Context (`-c`) | `262144` (q4_0 KV + FIT) |
+| Default `n_predict` | unset (client `max_tokens` controls length) |
+| API key | contents of `~/.config/llama/api_key` (`source …/env.sh` exports it) |
 
 LiteLLM / Strix / MAVERICK model id:
 
 ```text
-openai/qwen3-local:14b
+openai/qwen3.5-27b-uncensored-aggressive
 ```
 
-## Why 14B (not 30B) on this host
-
-- T4 has **16 GB VRAM** — 14B (~9 GB) fits with KV cache; 30B (~18 GB) does **not**
-- Host has only **16 GB RAM** — installing NVIDIA stack without swap previously froze the instance (OOM)
-- GPU inference ~20–25 tok/s after warm vs crawling on CPU
-
-Do **not** `ollama run qwen3-local:30b` on this instance.
-
-## Safe install procedure (avoid freezes)
-
-1. Add **8 GB+ swap** before any NVIDIA/apt heavy work
-2. Stop heavy containers (`qwen-uncensored`, `open-webui`)
-3. Install **driver once** (already done: 550.x); then only `nvidia-container-toolkit`
-4. `nvidia-ctk runtime configure --runtime=docker` + restart Docker
-5. Bring Ollama up with `gpus: all` and `mem_limit: 10g`
-6. Pull **14B only**, create alias, warm model
-
-## Examples
-
-```bash
-curl http://127.0.0.1:8780/v1/chat/completions \
-  -H 'Authorization: Bearer local-secret' \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "model": "qwen3-local:14b",
-    "messages": [{"role":"user","content":"/no_think\nhi"}],
-    "max_tokens": 128
-  }'
-```
-
-```bash
-source /home/kali/qwen-uncensored/env.sh
-```
+Open WebUI workspace id: `qwen-local` (base = alias acima).
 
 ## Ops
 
 ```bash
-cd /home/kali/qwen-uncensored
-docker compose up -d
-docker exec qwen-uncensored ollama pull huihui_ai/qwen3-abliterated:14b
-docker exec -i qwen-uncensored sh -c 'cat >/tmp/Modelfile <<EOF
-FROM huihui_ai/qwen3-abliterated:14b
-PARAMETER temperature 0.7
-PARAMETER num_ctx 4096
-SYSTEM """/no_think
-You are a concise cybersecurity assistant for authorized red-team and pentest work. Answer directly.
-"""
-EOF
-ollama create qwen3-local:14b -f /tmp/Modelfile'
-# preload into VRAM
-curl -s http://127.0.0.1:8780/api/generate -d '{"model":"qwen3-local:14b","keep_alive":"24h","think":false}'
-docker compose logs -f
-nvidia-smi
+sudo systemctl status qwen-uncensored
+source /home/ubuntu/iron-tools/iron-hub/services/qwen-uncensored/env.sh
+
+curl -sS http://127.0.0.1:8080/v1/models | jq '.data[0].id'
+curl -sS http://127.0.0.1:8080/v1/chat/completions \
+  -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "qwen3.5-27b-uncensored-aggressive",
+    "messages": [{"role":"user","content":"2+2="}],
+    "max_tokens": 16
+  }'
 ```
+
+Unit + drop-ins:
+
+- `deploy/qwen-uncensored.service` (sync → `/etc/systemd/system/`)
+- `/etc/systemd/system/qwen-uncensored.service.d/ctx.conf` → `CTX=262144`
+- `/etc/systemd/system/qwen-uncensored.service.d/n-predict.conf` → no server cap
+
+> O `docker-compose.yml` legado (Ollama :8780 / 14B) **não** é o path de produção. Use o systemd + `qwen-uncensored-serve`.

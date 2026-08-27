@@ -16,7 +16,11 @@ export function useServiceHealth(intervalMs = 30_000) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/health');
+      const res = await fetch('/hub/api/health', { credentials: 'include' });
+      if (res.status === 401) {
+        setHealth({});
+        return;
+      }
       if (!res.ok) throw new Error('health check failed');
       const data: HealthResponse = await res.json();
       const map: HealthMap = {};

@@ -10,13 +10,15 @@ Wants=\
   iron-pentest-api.service \
   iron-pentest-ui.service \
   darkweb-tracker.service \
+  darkweb-tracker-ui.service \
   o365-csirt.service \
   moneyprinterturbo.service \
   robin.service \
   python-dark-web-tor.service \
   botlivebetting.service \
   qwen-uncensored.service \
-  open-webui.service
+  open-webui.service \
+  iron-lab-agent.service
 After=network-online.target docker.service
 Wants=network-online.target
 

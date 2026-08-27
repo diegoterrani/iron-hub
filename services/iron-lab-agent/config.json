@@ -1,0 +1,25 @@
+{
+  "listen": "docker+local",
+  "port": 8793,
+  "roots": [
+    "/home/ubuntu/iron-tools",
+    "/home/ubuntu/open-webui",
+    "/home/ubuntu/src"
+  ],
+  "extra_read_files": [
+    "/etc/nginx/sites-available/irontools-hub",
+    "/etc/nginx/sites-available/llm-irontools",
+    "/etc/nginx/sites-available/open-webui-8443"
+  ],
+  "services": [
+    "open-webui",
+    "iron-hub",
+    "qwen-uncensored",
+    "iron-lab-agent",
+    "nginx"
+  ],
+  "max_read_bytes": 1048576,
+  "max_write_bytes": 1048576,
+  "max_output_bytes": 262144,
+  "command_timeout_sec": 120
+}

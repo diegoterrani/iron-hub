@@ -1,24 +1,50 @@
 [Unit]
-Description=Iron Security — Qwen local (Ollama OpenAI-compatible :8780)
-Documentation=file:///home/kali/qwen-uncensored/README.md
-Requires=docker.service
-After=docker.service network-online.target
-Wants=network-online.target
+Description=Qwen3.5-27B Instruct-Uncensored n0ctyx Q5 (llama.cpp Vulkan / dual V520)
+After=network-online.target qwen-nvme.service qwen-model-ensure.service
+Wants=network-online.target qwen-warmup.service
+Requires=qwen-nvme.service qwen-model-ensure.service
 
 [Service]
-Type=oneshot
-RemainAfterExit=yes
-User=kali
-Group=docker
-WorkingDirectory=/home/kali/qwen-uncensored
-Environment=HOME=/home/kali
-Environment=DOCKER_CONFIG=/home/kali/.docker
-ExecStart=/usr/bin/docker compose up -d --remove-orphans
-ExecStartPost=/bin/bash -c 'for i in $(seq 1 60); do curl -sf http://127.0.0.1:8780/api/tags >/dev/null && break; sleep 2; done; curl -sf http://127.0.0.1:8780/api/generate -d "{\"model\":\"qwen3-local:30b\",\"keep_alive\":\"24h\"}" >/dev/null || true'
-ExecStop=/usr/bin/docker compose down
-ExecReload=/usr/bin/docker compose up -d --remove-orphans
-TimeoutStartSec=600
-TimeoutStopSec=120
+Type=simple
+User=ubuntu
+Group=ubuntu
+SupplementaryGroups=render video
+Environment=VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/radeon_icd.json
+Environment=HOST=0.0.0.0
+Environment=PORT=8080
+Environment=CTX=262144
+Environment=THREADS=16
+Environment=THREADS_BATCH=16
+Environment=BATCH=2048
+Environment=UBATCH=512
+Environment=FIT=on
+Environment=FIT_TARGET=64
+Environment=LOAD_MODE=mmap+mlock
+Environment=SPLIT_MODE=layer
+Environment=TENSOR_SPLIT=
+Environment=CPU_MOE=0
+Environment=CACHE_TYPE_K=q4_0
+Environment=CACHE_TYPE_V=q4_0
+Environment=REASONING=off
+Environment=ALIAS=qwen3.5-27b-uncensored-aggressive
+Environment=MODEL=/nvme/models/Qwen3.5-27B-Instruct-Uncensored/Qwen3.5-27B-Instruct-Uncensored-Q5_K_M.gguf
+Environment=LLAMA_BIN=/home/ubuntu/src/llama.cpp/build-vulkan/bin/llama-server
+Environment=API_KEY_FILE=/home/ubuntu/.config/llama/api_key
+ExecStartPre=/usr/bin/test -f /nvme/models/.qwen-27b-ready
+ExecStartPre=/usr/bin/test -s /nvme/models/Qwen3.5-27B-Instruct-Uncensored/Qwen3.5-27B-Instruct-Uncensored-Q5_K_M.gguf
+ExecStart=/home/ubuntu/bin/qwen-uncensored-serve
+Restart=on-failure
+RestartSec=20
+StartLimitBurst=5
+LimitNOFILE=65536
+LimitMEMLOCK=infinity
+MemoryMax=112G
+MemoryHigh=104G
+OOMScoreAdjust=-200
+TimeoutStopSec=30
+KillMode=mixed
+KillSignal=SIGTERM
+FinalKillSignal=SIGKILL
 
 [Install]
 WantedBy=multi-user.target

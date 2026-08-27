@@ -25,12 +25,14 @@ function StatusBadge({ status }: { status: ServiceStatus }) {
 
 export function ServiceCard({ service, status }: ServiceCardProps) {
   const meta = CATEGORY_META[service.category];
-  const isClickable = Boolean(service.url);
+  const isClickable = Boolean(service.gateway);
   const effectiveStatus: ServiceStatus =
     service.type === 'cli' || service.type === 'desktop' ? 'cli' : status;
 
   const handleClick = () => {
-    if (service.url) window.open(service.url, '_blank', 'noopener,noreferrer');
+    if (!service.gateway) return;
+    // Always new tab (Hub stays open). Open WebUI uses /go/open-webui → cookie → /.
+    window.open(service.gateway, '_blank', 'noopener');
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -48,7 +50,7 @@ export function ServiceCard({ service, status }: ServiceCardProps) {
       onKeyDown={isClickable ? handleKeyDown : undefined}
       role={isClickable ? 'link' : undefined}
       tabIndex={isClickable ? 0 : undefined}
-      title={service.url ?? `${service.project} — ${service.type}`}
+      title={service.gateway ? `Abrir via Hub: ${service.gateway}` : `${service.project} — ${service.type}`}
     >
       <div className="service-card-top">
         <h4>{service.name}</h4>
@@ -59,7 +61,7 @@ export function ServiceCard({ service, status }: ServiceCardProps) {
         <span className="service-type">
           <TypeIcon type={service.type} /> {service.type}
         </span>
-        {service.port && <span className="service-port">:{service.port}</span>}
+        {service.gateway && <span className="service-gateway">via hub</span>}
         <span className="service-type">{service.stack}</span>
       </div>
       <div className="service-tags">

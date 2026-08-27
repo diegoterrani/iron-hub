@@ -22,27 +22,33 @@ Central de operações que consolida em uma única interface todos os serviços 
 
 ```bash
 cd ~/iron-hub
+cp -n .env.example .env   # defina IRON_HUB_USER / IRON_HUB_PASS
 npm ci && npm run build
 rm -rf api/dist && cp -r dist api/dist
 cd api && go build -o ../iron-hub-server .
 cd .. && chmod +x start.sh && ./start.sh
 ```
 
-Acesse: **http://127.0.0.1:3900**
+Acesse: **http://127.0.0.1:3900** → login local → catálogo → ferramentas via `/t/{id}/`.
+
+Fluxo: **Autenticação → Hub → Ferramenta** (portas internas só em `127.0.0.1`).
 
 ## Serviços satellite (LLM lab)
 
 | Serviço | Path | Porta |
 |---------|------|-------|
-| Qwen / Ollama | `services/qwen-uncensored/` | 8780 |
-| Open WebUI | `services/open-webui/` | 3080 |
+| Qwen3.5-27B n0ctyx Q5 / llama.cpp | `services/qwen-uncensored/` | 8080 (`qwen3.5-27b-uncensored-aggressive`, ctx 262144) |
+| Open WebUI | `services/open-webui/` | 3080 (workspace `qwen-local`) |
+| Iron Lab Agent | `services/iron-lab-agent/` | 8793 (local/docker bridges) |
 
 ```bash
 sudo cp deploy/iron-hub.service deploy/iron-services.target /etc/systemd/system/
 sudo cp services/qwen-uncensored/deploy/qwen-uncensored.service /etc/systemd/system/
 sudo cp services/open-webui/deploy/open-webui.service /etc/systemd/system/
+sudo cp services/iron-lab-agent/deploy/iron-lab-agent.service /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now qwen-uncensored open-webui iron-hub
+sudo systemctl enable --now qwen-uncensored open-webui iron-lab-agent iron-hub
+# Registrar tool na WebUI: services/iron-lab-agent/install.sh
 ```
 
 ## Variáveis de ambiente
@@ -53,7 +59,7 @@ sudo systemctl enable --now qwen-uncensored open-webui iron-hub
 
 ## Serviços monitorados
 
-Inclui **Iron Open WebUI** em `http://127.0.0.1:3080` (LLM local Qwen3 via Ollama).
+Inclui **Iron Open WebUI** em `http://127.0.0.1:3080` (LLM local Qwen3.5-27B via llama.cpp `:8080`).
 
 | Ferramenta | Porta | Vertical |
 |------------|-------|----------|
@@ -69,6 +75,9 @@ Inclui **Iron Open WebUI** em `http://127.0.0.1:3080` (LLM local Qwen3 via Ollam
 | MoneyPrinterTurbo | 8502 | Conteúdo |
 | Bot Live Betting | 3000 | iGaming |
 | Onboarding Casas | 3001 | iGaming |
+| Casino Integrity (BetBonus) | 8010 | iGaming |
+| Casino Bot Lab | 8011 | iGaming |
+| Graphify MCP | 8792 | Infra |
 
 ## Desenvolvimento
 
