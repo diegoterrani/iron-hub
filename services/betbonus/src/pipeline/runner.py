@@ -9,11 +9,12 @@ from src.scoring.engine import BonusScoringEngine
 from src.auth.credentials import CredentialsStore
 from src.scrapers.base import BaseScraper
 from src.scrapers.bet365_scraper import Bet365Scraper
+from src.scrapers.betway_scraper import BetwayScraper
 from src.scrapers.fourplay_br_scraper import FourPlayBrScraper
 from src.scrapers.fourplay_scraper import FourPlayScraper
 from src.scrapers.generic_promo_scraper import GenericPromoScraper
 from src.scrapers.pagol_scraper import PagolScraper
-from src.storage.store import JsonBonusStore
+from src.storage.db import make_store
 
 
 class BonusPipeline:
@@ -28,14 +29,15 @@ class BonusPipeline:
         scrapers: Optional[dict[str, BaseScraper]] = None,
     ):
         self.scoring = BonusScoringEngine()
-        self.store = JsonBonusStore(store_path)
+        # GAP 4: Postgres when BETBONUS_DATABASE_URL is set, JSON otherwise.
+        self.store = make_store(store_path)
         self.credentials = CredentialsStore(credentials_path)
         self.notifier = ConsoleNotifier()
         pagol = PagolScraper(delay=0.2)
         fourplay_br = FourPlayBrScraper(delay=0.2)
         self.scrapers = scrapers or {
             "bet365": Bet365Scraper(delay=0),
-            "betway": GenericPromoScraper(platform="betway", delay=0),
+            "betway": BetwayScraper(delay=0),
             "888": GenericPromoScraper(platform="888", delay=0),
             "4play": FourPlayScraper(delay=0.3),
             "4play_bet_br": fourplay_br,

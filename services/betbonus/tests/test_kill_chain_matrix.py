@@ -43,8 +43,32 @@ def test_bonus_play_strategy_bets_needed():
     )
     strategy = sc._bonus_play_strategy(primary)
     assert strategy["mode"] == "slots_under_max_bet"
-    assert strategy["auto_bet_available"] is False
+    assert strategy["auto_bet_available"] is True
+    assert strategy["auto_bet_method"] == "browser_spin_click"
     assert strategy["bets_needed_at_max_bet"] == 62  # ceil(185/3)
+
+
+def test_bonus_play_strategy_auto_bet_disabled():
+    import os
+    from unittest.mock import patch
+
+    with patch.dict(os.environ, {"BETBONUS_AUTO_BET": "0"}):
+        sc = PagolScraper(delay=0, token="x")
+        sc.AUTO_BET_ENABLED = False
+        primary = sc.normalize_bonus_rules(
+            {
+                "id": 1,
+                "balance": 500,
+                "rollover": 1500,
+                "targetRollover": 20000,
+                "maxConvertValue": 4000,
+                "maxSelectableBalanceBet": 300,
+                "bonusGameTypes": ["SLOTS"],
+            }
+        )
+        strategy = sc._bonus_play_strategy(primary)
+        assert strategy["auto_bet_available"] is False
+        assert "disabled" in strategy["auto_bet_blocker"]
 
 
 def test_dominant_blocker_priority():
@@ -116,10 +140,11 @@ class _FakePagol(PagolScraper):
             "wallet_unchanged": True,
         }
 
-    def probe_slots_for_bonus(self, limit=4, use_bonus_balance=True, search_terms=None):
+    def probe_slots_for_bonus(self, limit=4, use_bonus_balance=True, search_terms=None, auto_spin=False, spin_clicks=1):
         return {
-            "probe_kind": "slots_soft_launch",
+            "probe_kind": "slots_auto_spin" if auto_spin else "slots_soft_launch",
             "note": "launch only",
+            "auto_spin": auto_spin,
             "launches_ok": 1,
             "probed": 1,
             "probes": [{"game_id": 1268, "ok": True}],
@@ -161,4 +186,8 @@ def test_matrix_run_fake_no_withdraw():
         "rollover_gate_caps_extractable_value",
         "high_ev_launch_ok_but_bonus_game_type_blocks_stake",
     }
-    assert "provider_slot_auto_spin" in report["coverage"]["not_automatable_yet"]
+    # Auto-bet is now implemented (browser-based), so it should NOT be in not_automatable_yet
+    assert "provider_slot_auto_spin" not in report["coverage"]["not_automatable_yet"]
+    # BO operations remain not-automatable
+    assert "bo_bonus_credit_claim" in report["coverage"]["not_automatable_yet"]
+    assert "bo_approve_withdraw" in report["coverage"]["not_automatable_yet"]
