@@ -5,6 +5,7 @@ import type { OpsStatus } from '../types'
 
 const opsLinks = [
   { to: '/', label: 'Jornada de teste', end: true },
+  { to: '/overview', label: 'Overview' },
   { to: '/matriz', label: 'Matriz' },
 ]
 

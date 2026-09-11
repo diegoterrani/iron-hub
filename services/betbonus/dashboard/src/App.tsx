@@ -9,6 +9,7 @@ import { Integrity } from './pages/Integrity'
 import { Journey } from './pages/Journey'
 import { JourneyLogs } from './pages/JourneyLogs'
 import { OpsConsole } from './pages/OpsConsole'
+import { Overview } from './pages/Overview'
 import { Pipeline } from './pages/Pipeline'
 import { Runs } from './pages/Runs'
 import { Settings } from './pages/Settings'
@@ -19,6 +20,7 @@ export default function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route index element={<OpsConsole />} />
+        <Route path="overview" element={<Overview />} />
         <Route path="matriz" element={<Integrity />} />
         <Route path="agentes" element={<Agents />} />
         <Route path="runs" element={<Runs />} />

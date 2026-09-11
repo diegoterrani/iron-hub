@@ -28,23 +28,23 @@ type StepId =
 
 /** Fluxo transparente para o operador. */
 const STEPS: { id: StepId; label: string; hint: string }[] = [
-  { id: 'casa', label: '1 · Casa', hint: 'Escolher plataforma' },
-  { id: 'iniciar', label: '2 · Iniciar', hint: 'Abrir sessão' },
-  { id: 'auth', label: '3 · Auth', hint: 'Login / token' },
-  { id: 'executar', label: '4 · Executar', hint: 'Esgotar kill-chain' },
-  { id: 'relatorio', label: '5 · Relatório', hint: 'MD completo' },
+  { id: 'casa', label: '1 · Recon', hint: 'Casa + sessão' },
+  { id: 'iniciar', label: '2 · Auth', hint: 'Login / token' },
+  { id: 'auth', label: '3 · Discovery', hint: 'Bônus + ledger' },
+  { id: 'executar', label: '4 · Execute', hint: 'Acquire → probe → cashout' },
+  { id: 'relatorio', label: '5 · Report', hint: 'MD completo' },
 ]
 
 const EXEC_PIPELINE = [
   { id: 'auth', label: 'Auth / sessão API' },
   { id: 'discovery', label: 'Discovery de bônus + ledger' },
-  { id: 'claim_all', label: 'Claim / redeem de todos os bônus' },
-  { id: 'arm_play_poll', label: 'Armar Mines/Slots + poll' },
-  { id: 'llm_analyze', label: 'LLM Maverick + Deep Attack T&Cs' },
-  { id: 'high_ev_probe', label: 'High-EV soft-probe' },
-  { id: 'kill_chain_matrix', label: 'Kill-chain matrix' },
-  { id: 'oracle_withdraw', label: 'Oracle saque máximo' },
-  { id: 'settle_validate', label: 'Validar saque / onde travou' },
+  { id: 'claim_all', label: 'Acquire — claim / redeem todos os bônus' },
+  { id: 'arm_play_poll', label: 'Arm — Mines/Slots + poll' },
+  { id: 'llm_analyze', label: 'Analyze — LLM Maverick + Deep Attack T&Cs' },
+  { id: 'high_ev_probe', label: 'Probe — high-EV soft-probe' },
+  { id: 'kill_chain_matrix', label: 'Probe — kill-chain matrix' },
+  { id: 'oracle_withdraw', label: 'Cashout — oracle saque máximo' },
+  { id: 'settle_validate', label: 'Cashout — validar saque / onde travou' },
 ]
 
 const BUILTIN_HOUSES: HouseDraft[] = [
