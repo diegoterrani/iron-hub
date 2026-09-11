@@ -101,6 +101,9 @@ func init() {
 		if services[i].Type == "web" || services[i].Type == "api" {
 			// Open WebUI does not support subpaths; nginx switches root via /go/open-webui.
 			if services[i].ID == "open-webui" {
+				if upstream := strings.TrimSpace(os.Getenv("IRON_OPEN_WEBUI_UPSTREAM")); upstream != "" {
+					services[i].URL = upstream
+				}
 				if u := strings.TrimSpace(os.Getenv("IRON_OPEN_WEBUI_URL")); u != "" {
 					services[i].Gateway = u
 				} else {
