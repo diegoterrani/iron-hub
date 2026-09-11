@@ -160,12 +160,12 @@ class BonusNLPAnalyzer:
         return 0.0, "USD"
 
     def extract_wagering(self, text: str) -> float:
-        if NO_WAGERING_RE.search(text):
-            return 0.0
         for pattern in (WAGERING_RE, WAGERING_SHORT_RE):
             match = pattern.search(text)
             if match:
                 return _to_float(match.group(1))
+        if NO_WAGERING_RE.search(text):
+            return 0.0
         return 30.0
 
     def extract_expiry(self, text: str) -> tuple[int, Optional[int]]:
@@ -191,6 +191,16 @@ class BonusNLPAnalyzer:
         return found[:12]
 
     def analyze(self, text: str) -> ExtractedBonusFields:
+        # Trained spaCy NER path first (GAP 5); falls back to regex below.
+        try:
+            from src.nlp.spacy_extractor import extract_with_spacy
+
+            spacy_fields = extract_with_spacy(text)
+            if spacy_fields is not None:
+                return spacy_fields
+        except Exception:  # noqa: BLE001
+            pass
+
         amount, currency = self.extract_amount(text)
         match_pct = None
         m = MATCH_PERCENT_RE.search(text)

@@ -373,8 +373,8 @@ def _chromium_args() -> list[str]:
     ]
 
 
-def _click_game_ui(page: Any, frames: list[Any]) -> tuple[bool, str]:
-    """Clica no iframe do jogo (botão, canvas ou hitbox). Sem protocolo de spin."""
+def _click_game_ui_once(page: Any, frames: list[Any]) -> tuple[bool, str]:
+    """Clica no iframe do jogo (botão, canvas ou hitbox) uma vez. Sem protocolo de spin."""
     game = _pick_game_frame(frames)
     ordered: list[Any] = []
     if game is not None:
@@ -429,13 +429,34 @@ def _click_game_ui(page: Any, frames: list[Any]) -> tuple[bool, str]:
     return False, "no_iframe_target"
 
 
+def _click_game_ui(page: Any, frames: list[Any], *, clicks: int = 1) -> tuple[int, str]:
+    """Clica N vezes no alvo do jogo (botão/canvas/hitbox) com espera entre cliques.
+
+    Retorna (n_clicks, method). Fallbacks re-resolvem o alvo a cada clique para
+    aguentar overlays/intro screens e canvas rebuilds.
+    """
+    n = 0
+    method = ""
+    for _ in range(max(1, int(clicks))):
+        ok, m = _click_game_ui_once(page, list(frames))
+        if ok:
+            n += 1
+            method = m
+            try:
+                page.wait_for_timeout(900)
+            except Exception:
+                pass
+    return n, method
+
+
 def inspect_launch(
     launch_url: str,
     *,
     click_spin: bool = False,
     timeout_ms: int = 28000,
+    clicks: int = 1,
 ) -> dict[str, Any]:
-    """Abre o launch Salsa uma vez, lista iframe/hosts do provedor e opcionalmente clica no canvas.
+    """Abre o launch Salsa, lista iframe/hosts do provedor e opcionalmente clica N vezes.
 
     Não faz GET HTTP antes do Chromium: o token Salsa é de uso único e um fetch prévio
     queima a sessão (Oops! / CasinoGameAPI).
@@ -475,6 +496,7 @@ def inspect_launch(
     shot = SHOTS / ("last_spin.png" if click_spin else "last_provider_map.png")
     captured: list[str] = []
     clicked = False
+    n_clicks = 0
     method = ""
     error = ""
     title = ""
@@ -553,7 +575,8 @@ def inspect_launch(
                     }
                 )
             if click_spin and not launch_error:
-                clicked, method = _click_game_ui(page, list(page.frames))
+                n_clicks, method = _click_game_ui(page, list(page.frames), clicks=clicks)
+                clicked = n_clicks > 0
             elif click_spin and launch_error:
                 method = "salsa_launch_error"
             page.wait_for_timeout(2500 if click_spin and clicked else 400)
@@ -596,6 +619,7 @@ def inspect_launch(
     return {
         "ok": True,
         "clicked": clicked,
+        "clicks": n_clicks,
         "method": method,
         "title": title[:120],
         "screenshot": str(shot) if shot.exists() else "",
@@ -608,6 +632,6 @@ def inspect_launch(
     }
 
 
-def try_player_spin(launch_url: str, *, timeout_ms: int = 45000) -> dict[str, Any]:
-    """Abre a URL Salsa/provider e tenta 1 spin no iframe do jogo (não na página wrapper)."""
-    return inspect_launch(launch_url, click_spin=True, timeout_ms=timeout_ms)
+def try_player_spin(launch_url: str, *, timeout_ms: int = 45000, clicks: int = 1) -> dict[str, Any]:
+    """Abre a URL Salsa/provider e tenta N spins no iframe do jogo (não na página wrapper)."""
+    return inspect_launch(launch_url, click_spin=True, timeout_ms=timeout_ms, clicks=clicks)

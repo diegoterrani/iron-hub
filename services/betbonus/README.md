@@ -77,11 +77,11 @@ cd dashboard && npm run dev
 | **Jornada** | Casa → Scout → Auth → Discovery → Ledger → **Abuse/Saque** (legado promo) |
 | Carteira | Ledger ops + saldo real 4Play (`/api/wallet`) |
 | Abuse API | `/api/abuse/snapshot`, `/score`, `/oracle/withdraw`, `/findings` |
-| LLM (Maverick) | `/api/llm/status`, `/api/llm/model`, `/api/llm/ping`, `/api/abuse/llm/analyze` — OpenRouter (DeepSeek V3.1 ou Dolphin Venice) |
+| LLM (Maverick) | `/api/llm/status`, `/api/llm/model`, `/api/llm/ping`, `/api/abuse/llm/analyze` — OpenRouter (DeepSeek V3.1, Dolphin Venice) ou **Qwen3 27B local** (llama.cpp) |
 | Logs da jornada | `/logs` + `/api/journey/sessions*` — sessão detalhada Casa→Abuse (`data/journey_sessions.json`) |
 | PAGOL adapter | Live API `pagol_bet_br` · balance/bonuses/promocodes/withdraw preflight |
 
-LLM: padrão **Dolphin Mistral 24B Venice** (`cognitivecomputations/dolphin-mistral-24b-venice-edition`) via OpenRouter; a chave continua compartilhada com o Maverick (`OPENROUTER_API_KEY`). DeepSeek segue disponível no catálogo.
+LLM: padrão **Dolphin Mistral 24B Venice** via OpenRouter; a chave continua compartilhada com o Maverick (`OPENROUTER_API_KEY`). DeepSeek segue disponível no catálogo. **Qwen3 27B local** (`qwen38-27b-hauhau`) roda em `127.0.0.1:8082` (llama.cpp) — sem API key, selecionável via Admin ou `BETBONUS_LLM=qwen38-27b-hauhau`.
 | Bonuses | Inventário com filtros + score breakdown |
 | Pipeline | Fixture, upload HTML, colar HTML, URL live |
 | Auth | Token/login 4Play |

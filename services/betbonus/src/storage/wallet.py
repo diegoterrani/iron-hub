@@ -21,16 +21,6 @@ class WalletCredit(BaseModel):
     reality: str = "internal_sim"  # internal_sim | platform_observed
     note: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    id: str = Field(default_factory=lambda: str(uuid4()))
-    platform: str
-    bonus_id: str = ""
-    title: str
-    amount: float = 0.0
-    currency: str = "CRC"
-    source: str = "manual"  # promo | account | manual
-    status: str = "credited"  # credited | pending | failed
-    note: str = ""
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class WalletLedger:

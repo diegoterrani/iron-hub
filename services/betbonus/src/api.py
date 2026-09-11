@@ -52,7 +52,15 @@ from src.scrapers.fourplay_br_scraper import (
 )
 from src.scrapers.fourplay_scraper import FourPlayScraper
 from src.scrapers.pagol_scraper import PagolScraper
-from src.storage.wallet import WalletCredit, WalletLedger
+from src.storage import (
+    make_findings,
+    make_integrity,
+    make_journey_sessions,
+    make_redis,
+    make_store,
+    make_wallet,
+)
+from src.storage.wallet import WalletCredit
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
@@ -75,10 +83,11 @@ pipeline = BonusPipeline(
     store_path=DATA_DIR / "bonuses.json",
     credentials_path=DATA_DIR / "credentials.json",
 )
-wallet = WalletLedger(DATA_DIR / "wallet.json")
-abuse_findings = AbuseFindingStore(DATA_DIR / "abuse_findings.json")
-integrity_runs = IntegrityRunStore(DATA_DIR / "integrity_runs.json")
-journey_sessions = JourneySessionStore(DATA_DIR / "journey_sessions.json")
+wallet = make_wallet(DATA_DIR / "wallet.json")
+abuse_findings = make_findings(DATA_DIR / "abuse_findings.json")
+integrity_runs = make_integrity(DATA_DIR / "integrity_runs.json")
+journey_sessions = make_journey_sessions(DATA_DIR / "journey_sessions.json")
+redis_cache = make_redis()
 abuse_scoring = AbuseScoringEngine()
 activity = ActivityLog()
 nlp = BonusNLPAnalyzer()
@@ -1155,7 +1164,7 @@ class KillChainMatrixRequest(BaseModel):
 
 
 class AutoJourneyRequest(BaseModel):
-    """Jornada completa automática PAGOL (auth→claim→probes→LLM→matrix→oracle→report)."""
+    """Jornada completa automática house-agnostic (recon→stages→report)."""
 
     platform: str = "pagol_bet_br"
     session_id: str = ""
@@ -1170,6 +1179,9 @@ class AutoJourneyRequest(BaseModel):
     run_deep_attack: bool = True
     poll_seconds: int = Field(default=20, ge=0, le=120)
     persist_findings: bool = True
+    recon_use_llm: bool = True
+    recon_refresh: bool = False
+    recon_timeout_s: float = Field(default=45.0, ge=5.0, le=120.0)
 
 
 @app.get("/api/abuse/games/high-ev")
@@ -1259,15 +1271,29 @@ def abuse_games_probe_contribution(body: HighEvProbeRequest) -> dict[str, Any]:
 @app.post("/api/abuse/auto-journey/run")
 def abuse_auto_journey_run(body: AutoJourneyRequest) -> dict[str, Any]:
     """
-    Executa a jornada PAGOL inteira de uma vez:
-    Auth → Discovery → Claim/Redeem → Arm Mines/Slots+poll → LLM+Deep →
-    High-EV → Kill-chain matrix → Oracle → Settle/diagnóstico → Relatório DEV/CRM.
+    Executa a jornada house-agnostic inteira de uma vez:
+    Recon → Auth → Discovery → Acquire → Arm → Analyze → Probe →
+    Cashout → Report. Estágios selecionados pelo HouseProfile.
     """
     plat = _normalize_platform(body.platform)
-    if plat != "pagol_bet_br":
+
+    # Factory: select scraper by platform
+    if plat == "pagol_bet_br":
+        scraper = _pagol_scraper()
+        house_name = "PAGOL.BET.BR"
+        house_url = "https://pagol.bet.br/br/"
+    elif plat == "4play":
+        scraper = _fourplay_scraper()
+        house_name = "4PLAY.GAME"
+        house_url = "https://4play.game"
+    elif plat == "4play_bet_br":
+        scraper = _fourplay_br_scraper()
+        house_name = "4PLAY.BET.BR"
+        house_url = "https://4play.bet.br"
+    else:
         raise HTTPException(
             status_code=400,
-            detail="Auto-journey só implementada para pagol_bet_br neste lab.",
+            detail=f"Plataforma '{plat}' não suportada. Use: pagol_bet_br, 4play, 4play_bet_br.",
         )
 
     session = None
@@ -1276,10 +1302,10 @@ def abuse_auto_journey_run(body: AutoJourneyRequest) -> dict[str, Any]:
     if session is None:
         session = journey_sessions.start(
             platform=plat,
-            house_name="PAGOL.BET.BR",
-            house_url="https://pagol.bet.br/br/",
+            house_name=house_name,
+            house_url=house_url,
             scout_mode="live",
-            label="PAGOL · auto-journey",
+            label=f"{house_name} · auto-journey",
             meta={"mode": "auto_journey"},
             close_previous=False,
         )
@@ -1300,7 +1326,6 @@ def abuse_auto_journey_run(body: AutoJourneyRequest) -> dict[str, Any]:
             pass
 
     def _run() -> dict[str, Any]:
-        scraper = _pagol_scraper()
         runner = AutoJourneyRunner(
             scraper,
             oracle=WithdrawalOracle(scraper, findings=abuse_findings),
@@ -1308,6 +1333,7 @@ def abuse_auto_journey_run(body: AutoJourneyRequest) -> dict[str, Any]:
             ledger=wallet,
             process_offers=lambda offs: pipeline.process_offers(offs, notify=False),
             reports_dir=DATA_DIR / "reports",
+            cache_dir=DATA_DIR / "house_profiles",
             log=_journey_log,
         )
         # exhaust_mode: esgota o máximo de recursos mapeados na kill-chain
@@ -1333,6 +1359,9 @@ def abuse_auto_journey_run(body: AutoJourneyRequest) -> dict[str, Any]:
             run_deep_attack=deep,
             poll_seconds=poll_s,
             persist_findings=body.persist_findings,
+            recon_use_llm=body.recon_use_llm,
+            recon_refresh=body.recon_refresh,
+            recon_timeout_s=body.recon_timeout_s,
         )
 
     # LLM + probes can exceed default proxy timeouts — still run sync in lab
@@ -1369,17 +1398,41 @@ def abuse_auto_journey_run(body: AutoJourneyRequest) -> dict[str, Any]:
 
 
 @app.get("/api/abuse/auto-journey/latest.md")
-def abuse_auto_journey_latest_md() -> Response:
-    """Download do último relatório .md da jornada automática."""
-    path = DATA_DIR / "reports" / "pagol-auto-journey-latest.md"
-    if not path.exists():
+def abuse_auto_journey_latest_md(platform: str = "") -> Response:
+    """Download do último relatório .md da jornada automática.
+
+    Sem `platform` param: devolve o mais recente de qualquer casa.
+    Com `platform`: devolve o latest daquela casa específica.
+    """
+    reports_dir = DATA_DIR / "reports"
+    if platform:
+        plat = _normalize_platform(platform)
+        path = reports_dir / f"auto-journey-{plat}-latest.md"
+        if not path.exists():
+            raise HTTPException(status_code=404, detail=f"Nenhum relatório auto-journey para {plat}")
+        content = path.read_text(encoding="utf-8")
+        return Response(
+            content=content,
+            media_type="text/markdown; charset=utf-8",
+            headers={
+                "Content-Disposition": f'attachment; filename="auto-journey-{plat}-latest.md"'
+            },
+        )
+    # No platform: find the most recent auto-journey-*-latest.md
+    candidates = sorted(
+        reports_dir.glob("auto-journey-*-latest.md"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not candidates:
         raise HTTPException(status_code=404, detail="Nenhum relatório auto-journey ainda")
+    path = candidates[0]
     content = path.read_text(encoding="utf-8")
     return Response(
         content=content,
         media_type="text/markdown; charset=utf-8",
         headers={
-            "Content-Disposition": 'attachment; filename="betbonus-auto-journey-latest.md"'
+            "Content-Disposition": f'attachment; filename="{path.name}"'
         },
     )
 

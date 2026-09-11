@@ -19,9 +19,11 @@ LOCAL_ENV = Path(__file__).resolve().parents[2] / ".env"
 DEFAULT_MODEL = "cognitivecomputations/dolphin-mistral-24b-venice-edition"
 DEEPSEEK_MODEL = "deepseek/deepseek-chat-v3.1"
 DOLPHIN_MODEL = DEFAULT_MODEL
+LOCAL_27B_MODEL = "qwen38-27b-hauhau"
+LOCAL_27B_API_BASE = "http://127.0.0.1:8082/v1"
 LLM_CONFIG_PATH = Path(__file__).resolve().parents[2] / "data" / "llm_config.json"
 
-# Selectable OpenRouter models for BetBonus (chat completions, no tools).
+# Selectable models for BetBonus (chat completions, no tools).
 LLM_MODELS: tuple[dict[str, Any], ...] = (
     {
         "id": DOLPHIN_MODEL,
@@ -41,6 +43,15 @@ LLM_MODELS: tuple[dict[str, Any], ...] = (
         "description": "OpenRouter · T&Cs e deep attack",
         "max_tokens": 16384,
         "tools": False,
+    },
+    {
+        "id": LOCAL_27B_MODEL,
+        "aliases": ("local-27b", "qwen38-27b", f"ollama/{LOCAL_27B_MODEL}"),
+        "name": "Qwen3 27B (local · llama.cpp)",
+        "description": "Lab local · sem API key · 127.0.0.1:8082",
+        "max_tokens": 16384,
+        "tools": False,
+        "local": True,
     },
 )
 
@@ -72,6 +83,7 @@ def catalog_public() -> list[dict[str, Any]]:
             "description": e["description"],
             "max_tokens": int(e["max_tokens"]),
             "tools": bool(e.get("tools")),
+            "local": bool(e.get("local")),
         }
         for e in LLM_MODELS
     ]
@@ -144,9 +156,12 @@ class LLMConfig:
     app_title: str = "Iron Guard BetBonus"
     source: str = "env"
     max_tokens: int = 16384
+    local: bool = False
 
     @property
     def configured(self) -> bool:
+        if self.local:
+            return bool(self.model and self.api_base)
         return bool(self.api_key and self.model)
 
     @property
@@ -167,7 +182,8 @@ class LLMConfig:
             "api_key_set": bool(self.api_key),
             "api_key_masked": masked,
             "source": self.source,
-            "shared_with": "Iron Maverick / Strix",
+            "shared_with": "Iron Maverick / Strix" if not self.local else "local (llama.cpp)",
+            "local": self.local,
             "max_tokens": self.max_tokens,
             "models": catalog_public(),
         }
@@ -217,21 +233,29 @@ def load_iron_llm_config() -> LLMConfig:
         model = selected_entry["id"]
         max_tokens = int(selected_entry["max_tokens"])
         source_model = "ui-select"
+        is_local = bool(selected_entry.get("local"))
     elif env_entry:
         model = env_entry["id"]
         max_tokens = int(env_entry["max_tokens"])
         source_model = ""
+        is_local = bool(env_entry.get("local"))
     elif default_entry:
         model = default_entry["id"]
         max_tokens = int(default_entry["max_tokens"])
         source_model = ""
+        is_local = bool(default_entry.get("local"))
     else:
         model = env_override or DEFAULT_MODEL
         max_tokens = 8192
         source_model = ""
+        is_local = model == LOCAL_27B_MODEL
 
-    api_key = pick("OPENROUTER_API_KEY", "OPENROUTERKEY", "LLM_API_KEY")
-    api_base = pick("LLM_API_BASE", "OPENROUTER_API_BASE") or "https://openrouter.ai/api/v1"
+    if is_local:
+        api_key = ""
+        api_base = pick("LLM_API_BASE") or LOCAL_27B_API_BASE
+    else:
+        api_key = pick("OPENROUTER_API_KEY", "OPENROUTERKEY", "LLM_API_KEY")
+        api_base = pick("LLM_API_BASE", "OPENROUTER_API_BASE") or "https://openrouter.ai/api/v1"
     referer = pick("OPENROUTER_HTTP_REFERER") or "https://isi.luckygaming.com.br/"
     title = pick("OPENROUTER_APP_TITLE") or "Iron Guard BetBonus"
 
@@ -256,6 +280,7 @@ def load_iron_llm_config() -> LLMConfig:
         app_title=title,
         source=source,
         max_tokens=max_tokens,
+        local=is_local,
     )
 
 
@@ -277,12 +302,13 @@ class IronLLMClient:
                 "LLM não configurada — defina OPENROUTER_API_KEY/STRIX_LLM "
                 "(compartilhado com Maverick) ou BetBonusAI/.env"
             )
-        headers = {
-            "Authorization": f"Bearer {self.config.api_key}",
+        headers: dict[str, str] = {
             "Content-Type": "application/json",
-            "HTTP-Referer": self.config.http_referer,
-            "X-Title": self.config.app_title,
         }
+        if not self.config.local:
+            headers["Authorization"] = f"Bearer {self.config.api_key}"
+            headers["HTTP-Referer"] = self.config.http_referer
+            headers["X-Title"] = self.config.app_title
         cap = int(self.config.max_tokens or max_tokens)
         payload: dict[str, Any] = {
             "model": self.config.chat_model,

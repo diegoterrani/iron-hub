@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import time
 import uuid
@@ -72,10 +73,14 @@ class PagolScraper(BaseScraper):
         r"rocket|limbo|flyx|kick\s*crash)\b",
         re.IGNORECASE,
     )
-    # Stake lab: teto de segurança (reais). Aposta real no Spribe é SmartFox/WS (não auto ainda).
+    # Stake lab: teto de segurança (reais). UI auto-bet (Chromium) clica spin N times.
     MAX_LAB_STAKE_BRL = 5.0
     DEFAULT_LAB_STAKE_BRL = 1.0
     DEFAULT_STAKE_GAME_ID = 1624  # Mines (Spribe) — melhor que Aviator para stake controlado
+    # Auto-bet: browser-based spin clicks (no SmartFox/BlueBox decode).
+    AUTO_BET_ENABLED = os.environ.get("BETBONUS_AUTO_BET", "1") != "0"
+    AUTO_BET_CLICKS_DEFAULT = 1
+    AUTO_BET_MAX_CLICKS = 20
 
     @classmethod
     def cents_to_reais(cls, value: Any) -> float:
@@ -394,19 +399,23 @@ class PagolScraper(BaseScraper):
         }
 
     def _bonus_play_strategy(self, primary: dict[str, Any]) -> dict[str, Any]:
-        """Plano automatizável para maximizar valor conversível (sem auto-spin)."""
+        """Plano automatizável para maximizar valor conversível (browser-based auto-spin)."""
         remaining = float(primary.get("remaining_rollover_brl") or 0.0)
         max_bet = float(primary.get("max_bet_brl") or 0.0) or None
         max_convert = primary.get("max_convert_brl")
         game_types = list(primary.get("bonus_game_types") or [])
         if primary.get("slots_only"):
             path = "slots_under_max_bet"
-            autobet = False
-            autobet_blocker = "provider_slot_spin_api_not_implemented"
+            autobet = self.AUTO_BET_ENABLED
+            autobet_blocker = (
+                None if autobet else "BETBONUS_AUTO_BET disabled (env)"
+            )
         elif primary.get("allows_high_ev"):
             path = "high_ev_under_max_bet"
-            autobet = False
-            autobet_blocker = "spribe_smartfox_ws_not_implemented"
+            autobet = self.AUTO_BET_ENABLED
+            autobet_blocker = (
+                None if autobet else "BETBONUS_AUTO_BET disabled (env)"
+            )
         else:
             path = "restricted_game_types"
             autobet = False
@@ -424,9 +433,15 @@ class PagolScraper(BaseScraper):
             "bets_needed_at_max_bet": bets_at_max,
             "auto_bet_available": autobet,
             "auto_bet_blocker": autobet_blocker,
+            "auto_bet_method": "browser_spin_click" if autobet else None,
             "note": (
                 "Rollover deve ser cumprido em jogos elegíveis; teto de materialização "
-                f"= maxConvert ({max_convert}). Auto-spin/auto-bet ainda não implementado."
+                f"= maxConvert ({max_convert}). "
+                + (
+                    "Auto-bet via browser spin clicks (Chromium)."
+                    if autobet
+                    else "Auto-bet disabled."
+                )
             ),
         }
 
@@ -1007,6 +1022,78 @@ class PagolScraper(BaseScraper):
                 "error": str(exc)[:300],
             }
 
+    def auto_bet(
+        self,
+        game_id: int | str,
+        *,
+        clicks: int = 1,
+        use_bonus_balance: bool = True,
+        mode: str = "REAL",
+        timeout_ms: int = 45000,
+    ) -> dict[str, Any]:
+        """
+        Auto-bet via browser: launches game session in headless Chromium and
+        clicks the spin/bet button N times.
+
+        Uses integrity.player.inspect_launch to open the one-use Salsa URL and
+        perform spin clicks. The provider's default stake is used (no bet-size
+        UI manipulation — relies on client default).
+
+        Returns dict with clicks, method, wallet_before/after, and ok flag.
+        """
+        if not self.token:
+            raise PermissionError("Token necessário para auto_bet")
+        clicks = max(1, min(int(clicks), self.AUTO_BET_MAX_CLICKS))
+        wallet_before = self.get_wallet_snapshot(include_bonus_state=True)
+        launch = self.start_game(
+            game_id, mode=mode, use_bonus_balance=use_bonus_balance
+        )
+        salsa_url = str(launch.get("url") or "")
+        if not salsa_url:
+            return {
+                "ok": False,
+                "error": "no launch URL returned",
+                "game_id": game_id,
+                "clicks": 0,
+            }
+        try:
+            from src.integrity.player import inspect_launch
+
+            result = inspect_launch(
+                salsa_url,
+                click_spin=True,
+                clicks=clicks,
+                timeout_ms=timeout_ms,
+            )
+            n_clicks = int(result.get("clicks") or 0)
+            method = result.get("method") or "none"
+            launch_error = result.get("launch_error")
+            wallet_after = self.get_wallet_snapshot(include_bonus_state=True)
+            return {
+                "ok": n_clicks > 0,
+                "game_id": game_id,
+                "clicks": n_clicks,
+                "method": method,
+                "launch_error": launch_error,
+                "wallet_before": wallet_before.model_dump(mode="json"),
+                "wallet_after": wallet_after.model_dump(mode="json"),
+                "wallet_delta": {
+                    "balance": round(
+                        wallet_after.balance - wallet_before.balance, 2
+                    ),
+                    "bonus": round(
+                        wallet_after.bonus - wallet_before.bonus, 2
+                    ),
+                },
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "game_id": game_id,
+                "clicks": 0,
+                "error": str(exc)[:300],
+            }
+
     def redeem_promocode(
         self,
         code: str,
@@ -1300,8 +1387,13 @@ class PagolScraper(BaseScraper):
         limit: int = 4,
         use_bonus_balance: bool = True,
         search_terms: Optional[tuple[str, ...] | list[str]] = None,
+        auto_spin: bool = False,
+        spin_clicks: int = 1,
     ) -> dict[str, Any]:
-        """Soft-probe: lança slots elegíveis com useBonusBalance (sem spin)."""
+        """
+        Soft-probe: lança slots elegíveis com useBonusBalance.
+        If auto_spin=True, opens browser and clicks spin N times per game.
+        """
         terms = tuple(search_terms or ("gates of olympus", "sweet bonanza", "fortune rabbit", "slots"))
         by_id: dict[int, dict[str, Any]] = {}
         for term in terms:
@@ -1335,29 +1427,52 @@ class PagolScraper(BaseScraper):
                 "ok": False,
             }
             try:
-                launch = self.start_game(
-                    game["game_id"],
-                    mode="REAL",
-                    use_bonus_balance=use_bonus_balance,
-                )
-                salsa_url = str(launch.get("url") or "")
-                launch_row.update(
-                    {
-                        "ok": bool(salsa_url),
-                        "use_bonus_balance": launch.get("use_bonus_balance"),
-                        "salsa_url": salsa_url,
-                        "salsa_game": (launch.get("launch") or {}).get("game"),
-                        "salsa_balance": (launch.get("launch") or {}).get("balance"),
-                    }
-                )
+                if auto_spin:
+                    result = self.auto_bet(
+                        game["game_id"],
+                        clicks=spin_clicks,
+                        use_bonus_balance=use_bonus_balance,
+                    )
+                    launch_row.update(
+                        {
+                            "ok": result.get("ok", False),
+                            "auto_spin": True,
+                            "clicks": result.get("clicks", 0),
+                            "method": result.get("method"),
+                            "wallet_delta": result.get("wallet_delta"),
+                        }
+                    )
+                    if result.get("error"):
+                        launch_row["error"] = result["error"]
+                else:
+                    launch = self.start_game(
+                        game["game_id"],
+                        mode="REAL",
+                        use_bonus_balance=use_bonus_balance,
+                    )
+                    salsa_url = str(launch.get("url") or "")
+                    launch_row.update(
+                        {
+                            "ok": bool(salsa_url),
+                            "use_bonus_balance": launch.get("use_bonus_balance"),
+                            "salsa_url": salsa_url,
+                            "salsa_game": (launch.get("launch") or {}).get("game"),
+                            "salsa_balance": (launch.get("launch") or {}).get("balance"),
+                        }
+                    )
             except Exception as exc:  # noqa: BLE001
                 launch_row["error"] = str(exc)[:240]
             probes.append(launch_row)
         ok_n = sum(1 for p in probes if p.get("ok"))
         return {
-            "probe_kind": "slots_soft_launch",
-            "note": "Launch only — spin no provider (Pragmatic/PG) não automatizado",
+            "probe_kind": "slots_auto_spin" if auto_spin else "slots_soft_launch",
+            "note": (
+                "Auto-spin via browser (Chromium) — Pragmatic/PG slots"
+                if auto_spin
+                else "Launch only — spin no provider (Pragmatic/PG) não automatizado"
+            ),
             "use_bonus_balance": use_bonus_balance,
+            "auto_spin": auto_spin,
             "probed": len(probes),
             "launches_ok": ok_n,
             "probes": probes,

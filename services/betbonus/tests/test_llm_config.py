@@ -1,7 +1,10 @@
 from src.llm.abuse_assist import _extract_json
 from src.llm.client import (
     DOLPHIN_MODEL,
+    LOCAL_27B_API_BASE,
+    LOCAL_27B_MODEL,
     LLM_MODELS,
+    LLMConfig,
     _message_text,
     load_iron_llm_config,
     normalize_model_id,
@@ -18,10 +21,80 @@ def test_catalog_includes_dolphin():
     assert resolve_llm_model("dolphin-venice")["id"] == DOLPHIN_MODEL
 
 
+def test_catalog_includes_local_27b():
+    ids = {e["id"] for e in LLM_MODELS}
+    assert LOCAL_27B_MODEL in ids
+    entry = resolve_llm_model("local-27b")
+    assert entry is not None
+    assert entry["id"] == LOCAL_27B_MODEL
+    assert entry["local"] is True
+    assert resolve_llm_model("qwen38-27b")["id"] == LOCAL_27B_MODEL
+    assert resolve_llm_model(LOCAL_27B_MODEL)["id"] == LOCAL_27B_MODEL
+
+
+def test_local_config_configured_without_api_key():
+    cfg = LLMConfig(
+        model=LOCAL_27B_MODEL,
+        api_key="",
+        api_base=LOCAL_27B_API_BASE,
+        local=True,
+    )
+    assert cfg.configured is True
+    assert cfg.chat_model == LOCAL_27B_MODEL
+
+
+def test_local_config_not_configured_without_base():
+    cfg = LLMConfig(
+        model=LOCAL_27B_MODEL,
+        api_key="",
+        api_base="",
+        local=True,
+    )
+    assert cfg.configured is False
+
+
+def test_local_config_status():
+    cfg = LLMConfig(
+        model=LOCAL_27B_MODEL,
+        api_key="",
+        api_base=LOCAL_27B_API_BASE,
+        local=True,
+    )
+    status = cfg.status()
+    assert status["configured"] is True
+    assert status["local"] is True
+    assert status["shared_with"] == "local (llama.cpp)"
+    assert status["api_key_set"] is False
+
+
+def test_load_config_local_model_from_env(tmp_path, monkeypatch):
+    path = tmp_path / "missing-llm-config.json"
+    monkeypatch.setattr("src.llm.client.LLM_CONFIG_PATH", path)
+    monkeypatch.setenv("BETBONUS_LLM", LOCAL_27B_MODEL)
+    monkeypatch.setenv("LLM_API_BASE", LOCAL_27B_API_BASE)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    cfg = load_iron_llm_config()
+    assert cfg.model == LOCAL_27B_MODEL
+    assert cfg.local is True
+    assert cfg.configured is True
+    assert cfg.api_base == LOCAL_27B_API_BASE
+    assert cfg.api_key == ""
+
+
+def test_set_iron_llm_model_local(tmp_path, monkeypatch):
+    path = tmp_path / "llm_config.json"
+    monkeypatch.setattr("src.llm.client.LLM_CONFIG_PATH", path)
+    monkeypatch.delenv("BETBONUS_LLM", raising=False)
+    cfg = set_iron_llm_model("local-27b")
+    assert cfg.model == LOCAL_27B_MODEL
+    assert cfg.local is True
+    assert cfg.configured is True
+
+
 def test_load_shared_maverick_config():
     cfg = load_iron_llm_config()
     assert cfg.model
-    assert cfg.api_base.endswith("/api/v1") or "openrouter" in cfg.api_base
+    assert cfg.api_base
 
 
 def test_extract_json_fenced():
@@ -99,6 +172,8 @@ def test_default_model_is_dolphin(tmp_path, monkeypatch):
     path = tmp_path / "missing-llm-config.json"
     monkeypatch.setattr("src.llm.client.LLM_CONFIG_PATH", path)
     monkeypatch.delenv("BETBONUS_LLM", raising=False)
+    monkeypatch.delenv("LLM_API_BASE", raising=False)
+    monkeypatch.setattr("src.llm.client.LOCAL_ENV", tmp_path / "no-env")
     cfg = load_iron_llm_config()
     assert cfg.chat_model == DOLPHIN_MODEL
     assert cfg.max_tokens == 8192
