@@ -144,6 +144,52 @@ class WithdrawalOracle:
         snap = classify_conversion(wallet, account_bonuses=n, profile=self.profile)
         return snap
 
+    def _try_convert_bonus(
+        self,
+        before: WalletSnapshot,
+        *,
+        game_id: Optional[int | str] = None,
+    ) -> tuple[WalletSnapshot, list[str]]:
+        """Attempt to convert bonus balance → real balance by starting a game.
+
+        Returns (post_conversion_snapshot, conversion_gates).
+        """
+        if before.bonus <= 0 or before.balance > 0:
+            return before, []
+
+        if not hasattr(self.scraper, "start_game"):
+            return before, ["no_start_game_method"]
+
+        gid: Optional[int | str] = game_id
+        if gid is None:
+            gid = getattr(self.scraper, "default_game_id", None)
+        if gid is None:
+            gid = 1
+
+        try:
+            self.scraper.start_game(
+                gid,
+                mode="REAL",
+                use_bonus_balance=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return before, [f"bonus_convert_start_game_error={exc}"]
+
+        try:
+            after = self.scraper.get_wallet_snapshot()
+        except Exception:  # noqa: BLE001
+            return before, ["bonus_convert_snapshot_error"]
+
+        converted = after.balance > before.balance
+        gates = [
+            f"bonus_convert_attempted=game:{gid}",
+            f"bonus_before={before.bonus}",
+            f"balance_before={before.balance}",
+            f"balance_after={after.balance}",
+            f"converted={converted}",
+        ]
+        return (after if converted else before), gates
+
     def attempt_withdraw(
         self,
         *,
@@ -155,6 +201,8 @@ class WithdrawalOracle:
         max_amount: Optional[float] = None,
         preflight_only: bool = False,
         use_max_available: bool = True,
+        convert_bonus: bool = True,
+        game_id: Optional[int | str] = None,
     ) -> WithdrawOracleResult:
         before = self.scraper.get_wallet_snapshot()
         snap = classify_conversion(before, profile=self.profile)
@@ -167,6 +215,16 @@ class WithdrawalOracle:
             str(getattr(self.scraper, "platform", "")).endswith("bet_br")
             or isinstance(self.scraper, PagolScraper)
         )
+
+        # Bonus → real balance conversion: if only bonus exists, start a game
+        # with useBonusBalance to convert it to withdrawable real balance.
+        if convert_bonus and before.bonus > 0 and before.balance <= 0:
+            before, conv_gates = self._try_convert_bonus(before, game_id=game_id)
+            gates.extend(conv_gates)
+            if before.balance > 0:
+                snap = classify_conversion(before, profile=self.profile)
+                gates.append(f"post_conversion_status={snap.status}")
+
         if use_max_available:
             amount = self.resolve_max_amount(before.balance, max_amount, cents=uses_cents)
             gates.append(f"use_max_available={amount}")

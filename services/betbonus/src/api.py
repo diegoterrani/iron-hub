@@ -94,14 +94,8 @@ nlp = BonusNLPAnalyzer()
 
 
 def _normalize_platform(platform: str) -> str:
-    p = (platform or "").strip().lower()
-    if p in {"pagol", "pagol_bet_br", "pagol.bet.br"}:
-        return "pagol_bet_br"
-    if p in {"4play_bet_br", "4play.bet.br", "4playbr"}:
-        return "4play_bet_br"
-    if p in {"4play", "4play.game", "4play_game"}:
-        return "4play"
-    return p or "4play"
+    """Normalize a platform name/alias via the central scraper registry."""
+    return pipeline.registry.normalize(platform)
 
 
 def _fourplay_scraper() -> FourPlayScraper:
@@ -246,6 +240,7 @@ class ScrapeUrlRequest(BaseModel):
     platform: str = "generic"
     url: str
     delay: float = Field(default=1.5, ge=0, le=30)
+    render_js: bool = False
 
 
 class RunFixtureRequest(BaseModel):
@@ -435,7 +430,7 @@ def run_html(body: ScrapeHtmlRequest) -> list[BonusOffer]:
 
 @app.post("/api/pipeline/url")
 def run_url(body: ScrapeUrlRequest) -> dict[str, Any]:
-    result = pipeline.run_url(body.platform, body.url, delay=body.delay)
+    result = pipeline.run_url(body.platform, body.url, delay=body.delay, render_js=body.render_js)
     level = "success" if result.ok and result.offers else ("error" if not result.ok else "warn")
     activity.add(
         "pipeline.url",
@@ -450,6 +445,50 @@ def run_url(body: ScrapeUrlRequest) -> dict[str, Any]:
         "platform": result.platform,
         "source_url": result.source_url,
         "offers": result.offers,
+    }
+
+
+class ScrapeBatchTarget(BaseModel):
+    platform: str
+    mode: str = "auto"  # auto | url | html | file | live
+    url: str = ""
+    html: str = ""
+    path: str = ""
+    source_url: str = ""
+    delay: float = Field(default=1.5, ge=0, le=30)
+    render_js: bool = False
+
+
+class ScrapeBatchRequest(BaseModel):
+    targets: list[ScrapeBatchTarget]
+    max_workers: int = Field(default=4, ge=1, le=16)
+
+
+@app.post("/api/pipeline/batch")
+def run_batch(body: ScrapeBatchRequest) -> dict[str, Any]:
+    results = pipeline.run_many([t.model_dump() for t in body.targets], max_workers=body.max_workers)
+    ok_count = sum(1 for r in results if r.ok)
+    offer_count = sum(len(r.offers) for r in results)
+    activity.add(
+        "pipeline.batch",
+        f"Batch scrape → {ok_count}/{len(results)} ok, {offer_count} offers",
+        level="success" if ok_count == len(results) else "warn",
+        meta={"total": len(results), "ok": ok_count, "offers": offer_count},
+    )
+    return {
+        "total": len(results),
+        "ok": ok_count,
+        "offers": offer_count,
+        "results": [
+            {
+                "ok": r.ok,
+                "error": r.error,
+                "platform": r.platform,
+                "source_url": r.source_url,
+                "offers": r.offers,
+            }
+            for r in results
+        ],
     }
 
 
@@ -1018,6 +1057,8 @@ class WithdrawOracleRequest(BaseModel):
     max_amount: float = Field(default=FourPlayScraper.MAX_WITHDRAW_AMOUNT, ge=1)
     preflight_only: bool = False
     use_max_available: bool = True
+    convert_bonus: bool = True
+    game_id: Optional[int] = None
 
 
 @app.get("/api/abuse/snapshot", response_model=ConversionSnapshot)
@@ -1109,6 +1150,8 @@ def abuse_oracle_withdraw(body: WithdrawOracleRequest) -> WithdrawOracleResult:
             max_amount=max_amount,
             preflight_only=body.preflight_only,
             use_max_available=body.use_max_available,
+            convert_bonus=body.convert_bonus,
+            game_id=body.game_id,
         )
     )
     level = "success" if result.ok else ("warn" if result.attempted else "info")
@@ -1403,11 +1446,18 @@ def abuse_auto_journey_latest_md(platform: str = "") -> Response:
 
     Sem `platform` param: devolve o mais recente de qualquer casa.
     Com `platform`: devolve o latest daquela casa específica.
+
+    Handles both naming conventions:
+      new: auto-journey-{plat}-latest.md
+      old: {plat}-auto-journey-latest.md
     """
     reports_dir = DATA_DIR / "reports"
     if platform:
         plat = _normalize_platform(platform)
+        # Try new naming first, then old naming
         path = reports_dir / f"auto-journey-{plat}-latest.md"
+        if not path.exists():
+            path = reports_dir / f"{plat}-auto-journey-latest.md"
         if not path.exists():
             raise HTTPException(status_code=404, detail=f"Nenhum relatório auto-journey para {plat}")
         content = path.read_text(encoding="utf-8")
@@ -1415,12 +1465,13 @@ def abuse_auto_journey_latest_md(platform: str = "") -> Response:
             content=content,
             media_type="text/markdown; charset=utf-8",
             headers={
-                "Content-Disposition": f'attachment; filename="auto-journey-{plat}-latest.md"'
+                "Content-Disposition": f'attachment; filename="{path.name}"'
             },
         )
-    # No platform: find the most recent auto-journey-*-latest.md
+    # No platform: find the most recent auto-journey latest (both naming conventions)
     candidates = sorted(
-        reports_dir.glob("auto-journey-*-latest.md"),
+        list(reports_dir.glob("auto-journey-*-latest.md"))
+        + list(reports_dir.glob("*-auto-journey-latest.md")),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
