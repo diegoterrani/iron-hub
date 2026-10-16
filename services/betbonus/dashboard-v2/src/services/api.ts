@@ -18,6 +18,10 @@ import type {
   ConversionSnapshot,
   AbuseScoreItem,
   CatalogGame,
+  CampaignConfigRequest,
+  CampaignRunResponse,
+  CampaignStatusResponse,
+  CampaignReport,
 } from '../types'
 
 async function fetchMarkdown(path: string): Promise<{ text: string; filename: string; status: number }> {
@@ -107,6 +111,7 @@ export const api = {
       Array<{
         platform: string
         email: string
+        document: string
         label: string
         has_token: boolean
         token_preview: string
@@ -115,7 +120,7 @@ export const api = {
     >('/api/credentials'),
   saveToken: (
     platform: string,
-    body: { token: string; refresh_token?: string; email?: string; label?: string },
+    body: { token: string; refresh_token?: string; email?: string; document?: string; label?: string },
   ) =>
     request<{ ok: boolean; platform: string; email?: string; has_token: boolean }>(
       `/api/credentials/${platform}`,
@@ -127,7 +132,7 @@ export const api = {
     ),
   deleteCredentials: (platform: string) =>
     request<{ ok: boolean; deleted: boolean }>(`/api/credentials/${platform}`, { method: 'DELETE' }),
-  loginPlatform: (platform: string, body: { email: string; password: string; label?: string }) =>
+  loginPlatform: (platform: string, body: { email: string; password: string; document?: string; label?: string }) =>
     request<{ ok: boolean; credentials: unknown; session: unknown }>(
       `/api/credentials/${platform}/login`,
       {
@@ -358,6 +363,7 @@ export const api = {
     recon_use_llm?: boolean
     recon_refresh?: boolean
     recon_timeout_s?: number
+    sprint_mode?: boolean
   }) =>
     request<{
       ok: boolean
@@ -593,6 +599,27 @@ export const api = {
     request<{ deleted: boolean; id: string }>(`/api/journey/sessions/${id}`, { method: 'DELETE' }),
   clearJourneySessions: () =>
     request<{ deleted: number }>('/api/journey/sessions', { method: 'DELETE' }),
+  listAllJourneyReports: () =>
+    request<{
+      houses: Array<{
+        house_name: string
+        platform: string
+        house_url: string
+        session_id: string
+        session_status: string
+        started_at: string | null
+        ended_at: string | null
+        event_count: number
+        last_message: string
+        reports: Array<{
+          version: number
+          filename: string
+          size_bytes: number
+          modified_at: string
+        }>
+      }>
+      total_reports: number
+    }>('/api/journey/reports/all'),
   downloadJourneyReportMd: async (sessionId: string, body: Record<string, unknown>) => {
     const res = await fetch(withGateway(`/api/journey/sessions/${sessionId}/report.md`), {
       method: 'POST',
@@ -794,4 +821,23 @@ export const api = {
     URL.revokeObjectURL(url)
     return { ok: true as const }
   },
+
+  // ─── Campaign ──────────────────────────────────────────────────────────────
+  runCampaign: (config: CampaignConfigRequest) =>
+    request<CampaignRunResponse>('/api/campaign/run', {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify(config),
+    }),
+  getCampaignStatus: (campaignId: string) =>
+    request<CampaignStatusResponse>(`/api/campaign/${campaignId}`),
+  getCampaignReport: (campaignId: string) =>
+    request<{ ok: boolean; campaign_id: string; report: CampaignReport }>(
+      `/api/campaign/${campaignId}/report`,
+    ),
+  cancelCampaign: (campaignId: string) =>
+    request<{ ok: boolean; campaign_id: string; status: string; message: string }>(
+      `/api/campaign/${campaignId}/cancel`,
+      { method: 'POST' },
+    ),
 }

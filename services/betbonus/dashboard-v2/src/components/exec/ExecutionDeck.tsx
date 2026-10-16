@@ -9,6 +9,7 @@ import AnalyzeView from '../phases/AnalyzeView'
 import ProbeView from '../phases/ProbeView'
 import CashoutView from '../phases/CashoutView'
 import ReportView from '../phases/ReportView'
+import CampaignView from '../phases/CampaignView'
 
 export default function ExecutionDeck() {
   return (
@@ -25,6 +26,7 @@ export default function ExecutionDeck() {
         <Route path="/probe" element={<ProbeView />} />
         <Route path="/cashout" element={<CashoutView />} />
         <Route path="/report" element={<ReportView />} />
+        <Route path="/campaign" element={<CampaignView />} />
         <Route path="*" element={<Navigate to="/recon" replace />} />
       </Routes>
     </div>

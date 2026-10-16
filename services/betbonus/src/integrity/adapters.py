@@ -169,6 +169,24 @@ class PagolHouse(HouseAdapter):
     def withdraw_preflight(self) -> dict[str, Any]:
         return self.scraper.withdraw_preflight()
 
+    def auto_bet(
+        self,
+        game_id: int | str,
+        *,
+        clicks: int = 1,
+        use_bonus: bool = False,
+        mode: str = "REAL",
+        timeout_ms: int = 45000,
+    ) -> dict[str, Any]:
+        """Place N real bets at the provider game client (SEMI_AUTO stake)."""
+        return self.scraper.auto_bet(
+            game_id,
+            clicks=clicks,
+            use_bonus_balance=use_bonus,
+            mode=mode,
+            timeout_ms=timeout_ms,
+        )
+
 
 class FourPlayBrHouse(HouseAdapter):
     platform = "4play_bet_br"
@@ -235,6 +253,26 @@ class FourPlayBrHouse(HouseAdapter):
             "note": "SoftBet: preflight PIX/saque não mapeado nesta API — só snapshot",
             "unsupported_full_preflight": True,
         }
+
+    def auto_bet(
+        self,
+        game_id: int | str,
+        *,
+        clicks: int = 1,
+        use_bonus: bool = False,
+        mode: str = "REAL",
+        timeout_ms: int = 45000,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Place N real bets at the provider game client via SoftBet SPA."""
+        return self.scraper.auto_bet(
+            game_id,
+            clicks=clicks,
+            use_bonus=use_bonus,
+            mode=mode,
+            timeout_ms=timeout_ms,
+            game_name=str(kwargs.get("game_name") or kwargs.get("name") or ""),
+        )
 
 
 class FourPlayHouse(HouseAdapter):
@@ -355,6 +393,28 @@ class FourPlayHouse(HouseAdapter):
             game_id,
             mode=mode,
             use_bonus_balance=use_bonus,
+            game_code=str(kwargs.get("game_code") or kwargs.get("slug") or ""),
+            aggregator=str(kwargs.get("aggregator") or ""),
+            game_name=str(kwargs.get("game_name") or kwargs.get("name") or ""),
+        )
+
+    def auto_bet(
+        self,
+        game_id: int | str,
+        *,
+        clicks: int = 1,
+        use_bonus: bool = False,
+        mode: str = "REAL",
+        timeout_ms: int = 45000,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Place N real bets at the provider game client (SEMI_AUTO stake)."""
+        return self.scraper.auto_bet(
+            game_id,
+            clicks=clicks,
+            use_bonus_balance=use_bonus,
+            mode=mode,
+            timeout_ms=timeout_ms,
             game_code=str(kwargs.get("game_code") or kwargs.get("slug") or ""),
             aggregator=str(kwargs.get("aggregator") or ""),
             game_name=str(kwargs.get("game_name") or kwargs.get("name") or ""),

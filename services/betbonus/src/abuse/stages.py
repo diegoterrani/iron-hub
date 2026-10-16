@@ -17,6 +17,8 @@ ler o que os anteriores produziram e enriquecer para os seguintes.
 
 from __future__ import annotations
 
+import random
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -61,6 +63,7 @@ class JourneyContext:
     confirm_redeem: bool = True
     confirm_real_withdraw: bool = False
     confirm_real_bet: bool = True
+    auto_bet_clicks: int = 1
     settle_withdraw: bool = True
     settle_timeout_s: int = 90
     promocode_limit: int = 25
@@ -276,19 +279,86 @@ class ArmStage:
             if ctx.confirm_real_bet and callable(
                 getattr(ctx.scraper, "run_bonus_multiplier_lab", None)
             ):
-                lab = ctx.scraper.run_bonus_multiplier_lab(
-                    stake_brl=stake,
-                    confirm_redeem=False,
-                    confirm_real_bet=True,
-                    use_bonus_balance=True,
-                    poll_seconds=ctx.poll_seconds,
-                )
+                import inspect
+                _lab_params = inspect.signature(ctx.scraper.run_bonus_multiplier_lab).parameters
+
+                # --- I2: Rollover-aware multi-round wagering ---
+                # Determine how many rounds are needed to clear the rollover.
+                # rollover_remaining = bonus * multiplier - wagered_so_far
+                bonus_amt = float(primary.get("bonus_brl") or 0)
+                multiplier = float(primary.get("rollover_multiplier") or 20)
+                wagered = float(primary.get("wagered_brl") or 0)
+                rollover_remaining = max(0.0, bonus_amt * multiplier - wagered)
+                rounds_needed = max(1, int(rollover_remaining / max(stake, 1.0))) if rollover_remaining > 0 else 1
+                # Cap at reasonable max to avoid infinite loops
+                rounds_needed = min(rounds_needed, 500)
+
+                # Find a real game ID for 4play (crash category, first available)
+                _game_id = 15
+                if "game_id" in _lab_params:
+                    try:
+                        _games = ctx.scraper.list_casino_games(category="Crash", page=1, per_page=1)
+                        _items = _games.get("items") or []
+                        if _items:
+                            _game_id = _items[0].get("id", 15)
+                    except Exception:
+                        pass
+
+                # Execute wagering rounds until rollover is cleared or max rounds
+                last_lab: dict[str, Any] = {}
+                total_wagered_this_stage = 0.0
+                for _round in range(rounds_needed):
+                    if "game_id" in _lab_params:
+                        lab = ctx.scraper.run_bonus_multiplier_lab(
+                            game_id=_game_id,
+                            stake_brl=stake,
+                            use_bonus_balance=True,
+                            confirm_real_bet=True,
+                            poll_seconds=ctx.poll_seconds,
+                            clicks=ctx.auto_bet_clicks,
+                        )
+                    else:
+                        lab = ctx.scraper.run_bonus_multiplier_lab(
+                            stake_brl=stake,
+                            confirm_redeem=False,
+                            confirm_real_bet=True,
+                            use_bonus_balance=True,
+                            poll_seconds=ctx.poll_seconds,
+                            clicks=ctx.auto_bet_clicks,
+                        )
+                    last_lab = lab
+                    total_wagered_this_stage += stake
+                    # I3: Anti-detection jitter between rounds
+                    if _round < rounds_needed - 1:
+                        time.sleep(random.uniform(0.5, 2.0))
+                    # Check if rollover is now cleared
+                    try:
+                        _bs = ctx.scraper.get_bonus_conversion_state().get("primary") or {}
+                        _remaining = max(
+                            0.0,
+                            float(_bs.get("bonus_brl") or 0) * float(_bs.get("rollover_multiplier") or 20)
+                            - float(_bs.get("wagered_brl") or 0),
+                        )
+                        if _remaining <= 0:
+                            break
+                    except Exception:
+                        pass
+
                 arm_ev["mines_lab"] = {
-                    "bet_armed": lab.get("bet_armed"),
-                    "provider_url": lab.get("provider_url"),
-                    "gates": lab.get("gates"),
-                    "poll": lab.get("poll"),
-                    "auto_bet_implemented": lab.get("auto_bet_implemented"),
+                    "bet_armed": last_lab.get("bet_armed"),
+                    "provider_url": last_lab.get("provider_url"),
+                    "gates": last_lab.get("gates"),
+                    "poll": last_lab.get("poll"),
+                    "auto_bet_implemented": last_lab.get("auto_bet_implemented"),
+                    "auto_bet_ok": last_lab.get("auto_bet_ok"),
+                    "auto_bet_result": last_lab.get("auto_bet_result"),
+                }
+                arm_ev["wagering"] = {
+                    "rounds_planned": rounds_needed,
+                    "stake_brl": stake,
+                    "total_wagered_brl": total_wagered_this_stage,
+                    "rollover_remaining_before": rollover_remaining,
+                    "game_id": _game_id,
                 }
             if callable(getattr(ctx.scraper, "probe_slots_for_bonus", None)):
                 slots = ctx.scraper.probe_slots_for_bonus(
@@ -297,21 +367,29 @@ class ArmStage:
                 )
                 arm_ev["slots_probe"] = slots
             ctx.arm = arm_ev
-            changed = bool((arm_ev.get("mines_lab") or {}).get("poll", {}).get("changed"))
+            mines = arm_ev.get("mines_lab") or {}
+            auto_bet_ok = bool(mines.get("auto_bet_ok"))
+            changed = bool((mines.get("poll") or {}).get("changed"))
             ok = bool(
-                (arm_ev.get("mines_lab") or {}).get("bet_armed")
+                auto_bet_ok
+                or mines.get("bet_armed")
                 or (arm_ev.get("slots_probe") or {}).get("launches_ok")
             )
+            note_parts = []
+            if auto_bet_ok:
+                note_parts.append(
+                    f"auto_bet OK ({mines.get('auto_bet_result', {}).get('clicks', '?')} clicks)"
+                )
+            elif ctx.confirm_real_bet:
+                note_parts.append("auto_bet failed/incomplete")
+            note_parts.append(f"poll_changed={changed}")
+            note_parts.append(f"slots_ok={arm_ev.get('slots_probe', {}).get('launches_ok')}")
             return StageResult(
                 id=self.id,
                 title=self.title,
                 ok=ok,
-                mode="SEMI_AUTO",
-                note=(
-                    "Auto-bet provider NÃO implementado (Spribe/Pragmatic). "
-                    f"poll_changed={changed} "
-                    f"slots_ok={arm_ev.get('slots_probe', {}).get('launches_ok')}"
-                ),
+                mode="AUTO_BET" if auto_bet_ok else "SEMI_AUTO",
+                note=" ".join(note_parts),
                 evidence=arm_ev,
             )
         except Exception as exc:  # noqa: BLE001
@@ -434,9 +512,18 @@ class ProbeStage:
 
     def run(self, ctx: JourneyContext) -> StageResult:
         try:
-            hev = ctx.scraper.probe_high_ev_contribution(
-                limit=4, include_bonus_flag=True
-            )
+            import inspect
+            _hev_params = inspect.signature(ctx.scraper.probe_high_ev_contribution).parameters
+            if "max_probes" in _hev_params:
+                # FourPlay-style: (terms, max_probes, use_bonus_balance)
+                hev = ctx.scraper.probe_high_ev_contribution(
+                    max_probes=4, use_bonus_balance=True
+                )
+            else:
+                # Pagol-style: (limit, include_bonus_flag)
+                hev = ctx.scraper.probe_high_ev_contribution(
+                    limit=4, include_bonus_flag=True
+                )
             ctx.high_ev = hev
             return StageResult(
                 id=self.id,
@@ -519,6 +606,22 @@ class CashoutStage:
                     )
                 },
             }
+        # --- I5: Withdrawal denial handling ---
+        # If the oracle returned a denial, extract the reason and provide guidance.
+        if withdraw_result and not withdraw_result.get("ok"):
+            deny_code = withdraw_result.get("denyReasonCode") or ""
+            if deny_code:
+                withdraw_result["denial_guidance"] = {
+                    "WAGERING_NOT_MET": "Rollover incomplete. Increase wagering rounds in arm stage or reduce bonus amount.",
+                    "MIN_WITHDRAW_NOT_MET": "Balance below minimum withdrawal. Wager less (accept smaller loss) to retain withdrawable balance.",
+                    "BONUS_ACTIVE": "Bonus still active. Ensure rollover is fully cleared before withdrawing.",
+                    "WITHDRAWAL_LIMIT": "Daily/weekly withdrawal limit reached. Wait or split into smaller withdrawals.",
+                    "KYC_REQUIRED": "Account requires identity verification before withdrawal. Complete KYC first.",
+                    "METHOD_UNAVAILABLE": "Selected withdrawal method unavailable. Try a different method (tft/pix/iban).",
+                }.get(deny_code, f"Unknown denial: {deny_code}. Check house T&Cs for specific requirements.")
+            if not withdraw_result.get("gates"):
+                withdraw_result["gates"] = []
+
         ctx.withdraw_result = withdraw_result
         ctx.withdrawal_id = withdrawal_id
 
@@ -608,6 +711,117 @@ class CashoutStage:
         )
 
 
+class WageringCheckStage:
+    id = "wagering_check"
+    title = "Verificar rollover/wagering completion"
+    capabilities: tuple[str, ...] = ()
+
+    def run(self, ctx: JourneyContext) -> StageResult:
+        """Verify that the wagering requirement is met before cashout.
+
+        Reads bonus_state from the wallet snapshot. If rollover is incomplete,
+        reports the remaining amount and marks the stage as not-ok (which
+        prevents the cashout from being considered successful).
+
+        If rollover is complete (or no bonus is active), the stage passes.
+        """
+        # Get current wallet + bonus state
+        try:
+            wallet = ctx.scraper.get_wallet_snapshot(
+                include_bonus_state=True
+            )
+        except TypeError:
+            wallet = ctx.scraper.get_wallet_snapshot()
+        except Exception as exc:  # noqa: BLE001
+            return StageResult(
+                id=self.id,
+                title=self.title,
+                ok=False,
+                note=f"wallet_snapshot_error: {exc}",
+            )
+
+        bonus_state = (wallet.raw or {}).get("bonus_state") or {}
+        primary = bonus_state.get("primary") or {}
+
+        # Determine rollover status
+        rollover_remaining = float(
+            primary.get("remaining_rollover_brl")
+            or getattr(wallet, "rollover", 0)
+            or 0
+        )
+        wagered = float(primary.get("wagered_brl") or 0)
+        required = float(primary.get("required_rollover_brl") or 0)
+        bonus_active = bool(primary) or float(getattr(wallet, "bonus", 0) or 0) > 0
+
+        evidence: dict[str, Any] = {
+            "rollover_remaining": rollover_remaining,
+            "wagered": wagered,
+            "required": required,
+            "bonus_active": bonus_active,
+            "bonus_balance": float(getattr(wallet, "bonus", 0) or 0),
+            "cash_balance": float(getattr(wallet, "balance", 0) or 0),
+        }
+
+        if not bonus_active:
+            return StageResult(
+                id=self.id,
+                title=self.title,
+                ok=True,
+                note="No bonus active — no rollover to verify",
+                evidence=evidence,
+            )
+
+        if rollover_remaining <= 0:
+            return StageResult(
+                id=self.id,
+                title=self.title,
+                ok=True,
+                note=f"Rollover complete (wagered={wagered:.2f}/{required:.2f})",
+                evidence=evidence,
+            )
+
+        # Rollover incomplete — I4: poll briefly in case server is still processing
+        for _poll in range(3):
+            time.sleep(5.0)
+            try:
+                wallet2 = ctx.scraper.get_wallet_snapshot(include_bonus_state=True)
+            except TypeError:
+                wallet2 = ctx.scraper.get_wallet_snapshot()
+            except Exception:
+                break
+            bs2 = (wallet2.raw or {}).get("bonus_state") or {}
+            p2 = bs2.get("primary") or {}
+            remaining2 = float(p2.get("remaining_rollover_brl") or 0)
+            wagered2 = float(p2.get("wagered_brl") or 0)
+            if remaining2 <= 0 or wagered2 >= required:
+                evidence["rollover_remaining"] = remaining2
+                evidence["wagered"] = wagered2
+                evidence["settled_after_poll"] = True
+                return StageResult(
+                    id=self.id,
+                    title=self.title,
+                    ok=True,
+                    note=f"Rollover settled after polling ({wagered2:.2f}/{required:.2f})",
+                    evidence=evidence,
+                )
+
+        pct = 0.0
+        if required > 0:
+            pct = min(100.0, (wagered / required) * 100.0)
+        return StageResult(
+            id=self.id,
+            title=self.title,
+            ok=False,
+            mode="BLOCKED",
+            note=(
+                f"Rollover incomplete: {wagered:.2f}/{required:.2f} "
+                f"({pct:.1f}%) — remaining {rollover_remaining:.2f}. "
+                "Cashout may be denied or bonus forfeited."
+            ),
+            evidence=evidence,
+        )
+
+
 class ReportStage:
     id = "report"
     title = "Relatório final (markdown + JSON)"
@@ -636,6 +850,7 @@ STAGE_ORDER: tuple[str, ...] = (
     "arm",
     "analyze",
     "probe",
+    "wagering_check",
     "cashout",
     "report",
 )
@@ -648,6 +863,7 @@ STAGE_CLASSES: dict[str, type] = {
     "arm": ArmStage,
     "analyze": AnalyzeStage,
     "probe": ProbeStage,
+    "wagering_check": WageringCheckStage,
     "cashout": CashoutStage,
     "report": ReportStage,
 }
@@ -656,6 +872,10 @@ STAGE_CLASSES: dict[str, type] = {
 def build_plan(profile: HouseProfile) -> JourneyPlan:
     """Escolhe estágios habilitados a partir do HouseProfile."""
     recommended = set(profile.recommended_stages)
+    # Cashout is always available when the house exposes withdraw —
+    # the oracle handles min_withdraw gates and denial codes internally.
+    if profile.has("withdraw"):
+        recommended.add("cashout")
     stages: list[Any] = []
     for sid in STAGE_ORDER:
         cls = STAGE_CLASSES[sid]

@@ -18,6 +18,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from src.abuse.oracle import WithdrawalOracle, classify_conversion
+from src.abuse.wagering import WagerPlan, WageringStrategyEngine
 from src.models.abuse import AbuseFinding, AbuseSeverity, ConversionStatus
 from src.scrapers.base import BaseScraper
 from src.scrapers.pagol_scraper import PagolScraper
@@ -54,10 +55,12 @@ class KillChainMatrix:
         *,
         oracle: Optional[WithdrawalOracle] = None,
         findings: Any = None,
+        use_wagering_engine: bool = False,
     ):
         self.scraper = scraper
         self.oracle = oracle or WithdrawalOracle(scraper, findings=findings)
         self.findings = findings
+        self.use_wagering_engine = use_wagering_engine
 
     # --- Capability helpers ---
 
@@ -140,6 +143,96 @@ class KillChainMatrix:
                 return ids[0]
         return None
 
+    def arm_wager_engine(
+        self,
+        plan: "WagerPlan",
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """
+        Execute a WagerPlan via the WageringStrategyEngine.
+
+        Falls back to run_bonus_multiplier_lab if the engine is unavailable
+        or the scraper lacks auto_bet capability.
+
+        Args:
+            plan: A WagerPlan with game, stake, rounds, etc.
+            **kwargs: Passed through to engine.execute (auto_bet_fn, browser_farm,
+                      ws_client, poll_interval, max_rounds).
+
+        Returns:
+            dict with keys: ok, mode, result (WagerResult dict), fallback_used, gates
+        """
+        gates: list[str] = []
+        fallback_used = False
+
+        try:
+            engine = WageringStrategyEngine(self.scraper)
+            result = engine.execute(plan, **kwargs)
+            return {
+                "ok": result.success,
+                "mode": "AUTOMATED",
+                "result": result.to_dict(),
+                "fallback_used": False,
+                "gates": gates,
+            }
+        except Exception as exc:  # noqa: BLE001
+            gates.append(f"engine_error: {str(exc)[:200]}")
+
+        # Fallback: use run_bonus_multiplier_lab (capability dispatch)
+        if self._has("run_bonus_multiplier_lab"):
+            fallback_used = True
+            try:
+                import inspect
+                max_stake = float(getattr(self.scraper, "MAX_LAB_STAKE_BRL", 100.0))
+                stake = min(plan.stake, max_stake)
+                poll_s = int(kwargs.get("poll_interval", 20))
+                _lab_params = inspect.signature(
+                    self.scraper.run_bonus_multiplier_lab
+                ).parameters
+                if "game_id" in _lab_params:
+                    # FourPlay-style: (game_id, stake_brl, use_bonus_balance, mode, confirm_real_bet, poll_seconds, clicks)
+                    gid = self._find_first_game() or 15
+                    lab = self.scraper.run_bonus_multiplier_lab(
+                        game_id=gid,
+                        stake_brl=stake,
+                        use_bonus_balance=True,
+                        confirm_real_bet=True,
+                        poll_seconds=poll_s,
+                    )
+                else:
+                    # Pagol-style: (stake_brl, confirm_redeem, confirm_real_bet, use_bonus_balance, poll_seconds, clicks)
+                    lab = self.scraper.run_bonus_multiplier_lab(
+                        stake_brl=stake,
+                        confirm_redeem=False,
+                        confirm_real_bet=True,
+                        use_bonus_balance=True,
+                        poll_seconds=poll_s,
+                    )
+                return {
+                    "ok": bool(lab.get("bet_armed")),
+                    "mode": "SEMI_AUTO",
+                    "result": lab,
+                    "fallback_used": True,
+                    "gates": gates,
+                }
+            except Exception as exc:  # noqa: BLE001
+                gates.append(f"fallback_error: {str(exc)[:200]}")
+                return {
+                    "ok": False,
+                    "mode": "BLOCKED",
+                    "result": {},
+                    "fallback_used": True,
+                    "gates": gates,
+                }
+
+        return {
+            "ok": False,
+            "mode": "BLOCKED",
+            "result": {},
+            "fallback_used": False,
+            "gates": gates + ["no_bet_method_available"],
+        }
+
     def run(
         self,
         *,
@@ -153,6 +246,7 @@ class KillChainMatrix:
         auto_spin: bool = False,
         spin_clicks: int = 1,
         arm_wager_poll: bool = False,
+        use_wagering_engine: bool = False,
         poll_seconds: int = 20,
         high_ev_limit: int = 4,
         slots_limit: int = 3,
@@ -473,7 +567,62 @@ class KillChainMatrix:
             )
         )
 
-        if arm_wager_poll and self._has("run_bonus_multiplier_lab"):
+        if (arm_wager_poll or use_wagering_engine) and (
+            self.use_wagering_engine or use_wagering_engine
+        ):
+            # Wagering engine path: build plan + execute via engine
+            try:
+                max_stake = float(getattr(self.scraper, "MAX_LAB_STAKE_BRL", 100.0))
+                default_stake = float(getattr(self.scraper, "DEFAULT_LAB_STAKE_BRL", 1.0))
+                bet_cap = min(
+                    float((primary or {}).get("max_bet_brl") or default_stake),
+                    max_stake,
+                )
+                engine = WageringStrategyEngine(self.scraper)
+                plan = engine.build_plan(wallet, max_bet=bet_cap)
+                exec_result = self.arm_wager_engine(
+                    plan,
+                    poll_interval=poll_seconds,
+                    max_rounds=500,
+                )
+                res_data = exec_result.get("result") or {}
+                add(
+                    MatrixStageResult(
+                        id="arm_wager_engine",
+                        title="Wagering engine (adaptive bonus→cash conversion)",
+                        mode=exec_result.get("mode", "AUTOMATED"),
+                        ok=exec_result.get("ok", False),
+                        severity="critical" if res_data.get("rollover_cleared") else "medium",
+                        vulnerability=(
+                            "rollover_cleared_via_engine"
+                            if res_data.get("rollover_cleared")
+                            else "wager_engine_executed"
+                        ),
+                        note=(
+                            f"rounds={res_data.get('rounds_played', 0)} "
+                            f"wagered={res_data.get('total_wagered', 0)} "
+                            f"net_loss={res_data.get('net_loss', 0)} "
+                            f"strategy={plan.strategy}"
+                        ),
+                        gates=list(exec_result.get("gates") or []),
+                        evidence={
+                            "plan": plan.to_dict(),
+                            "result": res_data,
+                            "fallback_used": exec_result.get("fallback_used", False),
+                        },
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001
+                add(
+                    MatrixStageResult(
+                        id="arm_wager_engine",
+                        title="Wagering engine",
+                        mode="BLOCKED",
+                        ok=False,
+                        note=str(exc)[:300],
+                    )
+                )
+        elif arm_wager_poll and self._has("run_bonus_multiplier_lab"):
             # Arma Mines só se high-EV elegível; senão arma 1º slot ok
             try:
                 max_stake = float(getattr(self.scraper, "MAX_LAB_STAKE_BRL", 100.0))

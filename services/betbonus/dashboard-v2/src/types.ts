@@ -322,3 +322,93 @@ export interface LLMModelOption {
   max_tokens: number
   tools: boolean
 }
+
+// ─── Campaign ────────────────────────────────────────────────────────────────
+
+export type CampaignStage =
+  | 'pending'
+  | 'registered'
+  | 'bonus_claimed'
+  | 'wagering'
+  | 'wagered'
+  | 'withdrawn'
+  | 'failed'
+
+export interface CampaignConfigRequest {
+  accounts: number
+  platforms: string[]
+  stagger_minutes: number
+  max_parallel: number
+  retry_failed: boolean
+  max_retries?: number
+  wager_method: string
+  withdraw_split: boolean
+  dry_run: boolean
+}
+
+export interface CampaignProgress {
+  total: number
+  completed: number
+  failed: number
+  in_progress: number
+  pct: number
+  stages: Record<string, number>
+  total_extracted: number
+  net_profit: number
+  duration_s: number
+}
+
+export interface CampaignAccountStatus {
+  account_id: string
+  platform: string
+  identity_name: string
+  identity_email: string
+  identity_cpf: string
+  identity_password: string
+  identity_phone: string
+  identity_birth_date: string
+  identity_address: string
+  identity_city: string
+  identity_state: string
+  stage: CampaignStage
+  error: string
+  balance: number
+  bonus: number
+  withdrawn: number
+  attempts: number
+  timestamps: Record<string, string>
+}
+
+export interface CampaignStatusResponse {
+  ok: boolean
+  campaign_id: string
+  status: string
+  progress: CampaignProgress
+  started_at: string | null
+  finished_at: string | null
+  error: string | null
+}
+
+export interface CampaignReport {
+  campaign_id: string
+  config: CampaignConfigRequest
+  accounts: CampaignAccountStatus[]
+  total_extracted: number
+  total_cost: number
+  net_profit: number
+  success_rate: number
+  duration_s: number
+  errors: Array<{
+    account_id: string
+    platform: string
+    error: string
+    attempts: number
+  }>
+}
+
+export interface CampaignRunResponse {
+  ok: boolean
+  campaign_id: string
+  status: string
+  message: string
+}

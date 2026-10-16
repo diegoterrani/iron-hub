@@ -258,6 +258,126 @@ def build_journey_markdown(
             ]
         )
 
+    # ── Telemetria dos Eventos de Exploração ──────────────────────────
+    telemetry_kinds = (
+        "abuse.games.bonus_multiplier",
+        "abuse.games.probe",
+        "abuse.games.discover",
+        "abuse.llm.analyze",
+        "abuse.killchain",
+        "wallet.snapshot",
+        "wallet.delta",
+        "promocode.redeem",
+        "wallet.poll",
+        "start_game",
+        "withdraw",
+        "ledger.credit",
+    )
+    telemetry_events = [
+        e for e in session.events
+        if e.kind in telemetry_kinds or e.step in ("abuse", "wallet", "auth")
+    ]
+    if telemetry_events:
+        lines.extend(
+            [
+                "## Telemetria dos Eventos de Exploração de Bônus",
+                "",
+                "Eventos que materializaram ou mediram a exploração de bônus "
+                "(lab, probe, redeem, wallet delta, saque).",
+                "",
+                "| # | Timestamp | Step | Kind | Level | Mensagem |",
+                "|---|-----------|------|------|-------|----------|",
+            ]
+        )
+        for idx, ev in enumerate(
+            sorted(telemetry_events, key=lambda e: e.created_at), 1
+        ):
+            ts = ev.created_at.strftime("%H:%M:%S")
+            msg_short = (ev.message or "").replace("|", "\\|")[:120]
+            lines.append(
+                f"| {idx} | `{ts}` | `{ev.step}` | `{ev.kind}` | **{ev.level}** | {msg_short} |"
+            )
+        lines.append("")
+        # wallet deltas summary
+        wallet_deltas = [
+            e for e in telemetry_events
+            if e.kind in ("wallet.delta", "wallet.poll") and e.detail
+        ]
+        if wallet_deltas:
+            lines.extend(["### Deltas de carteira", ""])
+            for ev in wallet_deltas:
+                d = ev.detail
+                db = d.get("balance_delta", d.get("delta_balance"))
+                dbon = d.get("bonus_delta", d.get("delta_bonus"))
+                if db is not None or dbon is not None:
+                    lines.append(
+                        f"- `{ev.created_at.strftime('%H:%M:%S')}` "
+                        f"Δbalance={db if db is not None else '—'} "
+                        f"Δbonus={dbon if dbon is not None else '—'} "
+                        f"(changed={d.get('changed', '?')})"
+                    )
+            lines.append("")
+
+    # ── Passo a Passo (ação manual no site) ───────────────────────────
+    manual_steps: list[str] = []
+    for ev in session.events:
+        d = ev.detail or {}
+        # Lab results with confirm_real_bet / bet_armed
+        if ev.kind in (
+            "abuse.games.bonus_multiplier",
+            "abuse.killchain",
+        ) and d:
+            provider_url = d.get("provider_url") or d.get("salsa_url") or ""
+            if d.get("confirm_real_bet") or d.get("bet_armed"):
+                manual_steps.append(
+                    f"**Lab armado** ({ev.created_at.strftime('%H:%M:%S')}): "
+                    f"abrir `{provider_url}` e apostar stake ≤ R$ "
+                    f"{d.get('stake_brl', '1.00')} dentro da janela de "
+                    f"{d.get('poll_seconds', 30)}s."
+                )
+            gates = d.get("gates") or []
+            if gates:
+                manual_steps.append(
+                    f"Gates ativos: {', '.join(gates)}"
+                )
+        # Deep attack lab_runbook
+        if ev.kind == "abuse.llm.analyze" and d:
+            llm = d.get("llm") or {}
+            runbook = llm.get("lab_runbook") or []
+            if runbook:
+                manual_steps.extend(
+                    f"{i}. {step}" for i, step in enumerate(runbook, 1)
+                )
+        # Conversion path from deep attack
+        if ev.kind == "abuse.llm.analyze" and d:
+            llm = d.get("llm") or {}
+            conv_path = llm.get("conversion_path") or ""
+            if conv_path:
+                manual_steps.append(f"Conversion path: {conv_path}")
+        # Withdraw results
+        if ev.kind in ("withdraw", "oracle.withdraw") and d:
+            status = d.get("status") or d.get("result") or ""
+            if status:
+                manual_steps.append(
+                    f"Saque: {status} "
+                    f"(amount={d.get('amount', '?')}, "
+                    f"method={d.get('method', '?')})"
+                )
+    if manual_steps:
+        lines.extend(
+            [
+                "## Passo a Passo — Ação Manual no Site",
+                "",
+                "Quando a exploração depende de ações do usuário diretamente no site "
+                "para materialização dos gains, execute estes steps in order:",
+                "",
+            ]
+        )
+        for i, step in enumerate(manual_steps, 1):
+            lines.append(f"{i}. {step}")
+        lines.append("")
+
+    # ── Timeline completa ─────────────────────────────────────────────
     lines.extend(["## Timeline completa da sessão", ""])
     # events are newest-first in store append? check append order
     events = list(session.events)

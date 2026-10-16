@@ -484,6 +484,50 @@ class PagolScraper(BaseScraper):
         data = self._get("/user/promocode/all-enabled.do")
         return list(data) if isinstance(data, list) else []
 
+    def validate_promocode(self, code: str) -> dict[str, Any]:
+        """
+        Lightweight validation: check if a promocode is still redeemable
+        without actually redeeming it. Returns {valid, reason, detail}.
+        """
+        code = (code or "").strip()
+        if not code:
+            return {"valid": False, "reason": "empty_code"}
+        try:
+            items = self.list_enabled_promocodes()
+        except Exception as exc:
+            return {"valid": False, "reason": f"list_error: {str(exc)[:100]}"}
+        # Check if the code is in the enabled list
+        found = None
+        for item in items:
+            c = str(item.get("code") or item.get("promocode") or "").strip()
+            if c.upper() == code.upper():
+                found = item
+                break
+        if found is None:
+            return {"valid": False, "reason": "not_in_enabled_list"}
+        # Check expiry fields (common patterns in Lucky Gaming API)
+        for key in ("endDate", "end_date", "expiry", "expiresAt", "validUntil"):
+            val = found.get(key)
+            if val:
+                try:
+                    from datetime import datetime, timezone
+                    if isinstance(val, (int, float)):
+                        # epoch ms or seconds
+                        ts = val / 1000 if val > 1e10 else val
+                        if ts < datetime.now(timezone.utc).timestamp():
+                            return {"valid": False, "reason": f"expired:{key}"}
+                    elif isinstance(val, str):
+                        dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                        if dt < datetime.now(timezone.utc):
+                            return {"valid": False, "reason": f"expired:{key}"}
+                except (ValueError, TypeError):
+                    pass
+        # Check status field
+        status = str(found.get("status") or found.get("state") or "").upper()
+        if status in {"EXPIRED", "DISABLED", "REVOKED", "USED", "CONSUMED"}:
+            return {"valid": False, "reason": f"status:{status.lower()}"}
+        return {"valid": True, "reason": "ok", "detail": found}
+
     def claim_or_activate_bonus(self, bonus_id: int | str) -> dict[str, Any]:
         """
         Tenta endpoints comuns de claim/activate (Lucky). Muitos respondem 204.
@@ -1205,14 +1249,15 @@ class PagolScraper(BaseScraper):
         confirm_real_bet: bool = False,
         use_bonus_balance: bool = True,
         poll_seconds: int = 30,
+        clicks: int = 1,
     ) -> dict[str, Any]:
         """
         Lab: resgatar promo (opt) → abrir Mines/Aviator → armar stake controlado → medir carteira.
 
-        Limite operacional:
-        - Spribe usa SmartFox BlueBox (WS binário). Este lab NÃO envia aposta automática ao provider.
-        - Com confirm_real_bet=True: arma a sessão (URL + teto), faz poll da wallet para detectar
-          delta após você (ou operador) apostar o stake mínimo na URL retornada.
+        With confirm_real_bet=True: launches the game session in headless Chromium
+        and clicks the spin/bet button N times via integrity.player.inspect_launch.
+        Falls back to wallet-only polling if the browser click fails or clicks=0.
+
         """
         if not self.token:
             raise PermissionError("Token necessário para bonus multiplier lab")
@@ -1292,7 +1337,7 @@ class PagolScraper(BaseScraper):
             steps.append({"step": "start_game", "ok": False, "error": str(exc)[:300]})
             gates.append("start_game_failed")
 
-        # 3) Armar stake / poll (sem auto-bet Spribe)
+        # 3) Armar stake / auto-bet via browser / poll
         bet_armed = bool(confirm_real_bet and provider.get("provider_url"))
         if confirm_real_bet and not provider.get("provider_url"):
             gates.append("provider_url_missing")
@@ -1301,6 +1346,32 @@ class PagolScraper(BaseScraper):
             bet_armed = False
         if not confirm_real_bet:
             gates.append("bet_not_confirmed")
+
+        # Browser-based auto-bet: click spin N times in the launched game
+        auto_bet_result: dict[str, Any] = {}
+        if bet_armed and clicks > 0:
+            salsa_url = str(launch.get("url") or "")
+            if salsa_url:
+                try:
+                    from src.integrity.player import inspect_launch
+
+                    auto_bet_result = inspect_launch(
+                        salsa_url,
+                        click_spin=True,
+                        clicks=max(1, min(int(clicks), self.AUTO_BET_MAX_CLICKS)),
+                        timeout_ms=45000,
+                    )
+                    n_clicks = int(auto_bet_result.get("clicks") or 0)
+                    auto_bet_result["ok"] = n_clicks > 0
+                    steps.append({"step": "auto_bet_browser", **auto_bet_result})
+                    if n_clicks > 0:
+                        gates.append(f"auto_bet_clicks={n_clicks}")
+                    else:
+                        gates.append("auto_bet_no_clicks")
+                except Exception as exc:  # noqa: BLE001
+                    gates.append(f"auto_bet_error={str(exc)[:200]}")
+            else:
+                gates.append("auto_bet_no_salsa_url")
 
         poll: dict[str, Any] = {"ran": False}
         if bet_armed and poll_seconds > 0:
@@ -1311,13 +1382,27 @@ class PagolScraper(BaseScraper):
             steps.append({"step": "wallet_poll", **poll})
 
         wallet_end = self.get_wallet_snapshot()
+        auto_bet_ok = bool(auto_bet_result.get("ok"))
         auto_bet_note = (
-            "Spribe Mines/Aviator usa SmartFox BlueBox (WebSocket binário). "
-            "O lab arma a sessão e mede a carteira; a aposta mínima deve ser "
-            f"feita na provider_url com stake ≤ R$ {stake:.2f}."
+            f"Auto-bet via browser: {'OK' if auto_bet_ok else 'not executed/failed'}"
+            + (f" ({auto_bet_result.get('clicks')} clicks)" if auto_bet_result.get("clicks") else "")
+            + f". Stake ≤ R${stake:.2f}."
         )
 
         findings: list[dict[str, Any]] = []
+        if auto_bet_ok:
+            findings.append(
+                {
+                    "id": "auto_bet_executed",
+                    "severity": "high",
+                    "title": f"Auto-bet placed {auto_bet_result.get('clicks')} spin(s) via browser",
+                    "rationale": (
+                        f"Browser clicked spin {auto_bet_result.get('clicks')}x "
+                        f"in game {game_id} (method={auto_bet_result.get('method')})"
+                    ),
+                    "test_idea": "Verify rollover progress and bonus conversion",
+                }
+            )
         if redeem_result and redeem_result.get("ok") and redeem_result.get("bonus_delta", 0) > 0:
             findings.append(
                 {
@@ -1359,8 +1444,10 @@ class PagolScraper(BaseScraper):
         return {
             "platform": self.platform,
             "lab": "bonus_multiplier",
-            "auto_bet_implemented": False,
+            "auto_bet_implemented": True,
+            "auto_bet_ok": auto_bet_ok,
             "auto_bet_note": auto_bet_note,
+            "auto_bet_result": auto_bet_result,
             "stake_brl": stake,
             "max_lab_stake_brl": self.MAX_LAB_STAKE_BRL,
             "game_id": game_id,
@@ -1378,7 +1465,11 @@ class PagolScraper(BaseScraper):
             "steps": steps,
             "poll": poll,
             "findings": _dedup_findings(findings),
-            "ok": bool(bet_armed or (redeem_result and redeem_result.get("ok"))),
+            "ok": bool(
+                auto_bet_ok
+                or bet_armed
+                or (redeem_result and redeem_result.get("ok"))
+            ),
         }
 
     def probe_slots_for_bonus(
@@ -1687,8 +1778,19 @@ class PagolScraper(BaseScraper):
             if include_promocodes:
                 codes = self.list_enabled_promocodes()
                 notes.append(f"promocodes_enabled={len(codes)}")
+                valid_count = 0
                 for item in codes[: max(0, promocode_limit)]:
+                    code = str(item.get("code") or item.get("promocode") or "").strip()
+                    if not code:
+                        continue
+                    # Validate before adding to catalog
+                    v = self.validate_promocode(code)
+                    if not v.get("valid"):
+                        notes.append(f"promocode_skip:{code}:{v.get('reason', '?')}")
+                        continue
+                    valid_count += 1
                     offers.append(self.offer_from_promocode(item))
+                notes.append(f"promocodes_valid={valid_count}")
             wallet = self.get_wallet_snapshot()
             notes.append(
                 f"balance={wallet.balance} bonusBalance={wallet.bonus} currency=BRL"
@@ -1709,8 +1811,9 @@ class PagolScraper(BaseScraper):
                 error=str(exc),
             )
 
-    def scrape_url(self, url: str) -> ScrapeResult:
-        # Prefer live API — HTML SPA shell is empty for generic scrape
+    def scrape_url(self, url: str, render_js: bool = False) -> ScrapeResult:
+        # Prefer live API — HTML SPA shell is empty for generic scrape.
+        # (API scraper — URL/render_js are ignored; semantics unified with base.)
         if self.token:
             return self.scrape_live()
         return ScrapeResult(

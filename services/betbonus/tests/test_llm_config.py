@@ -73,6 +73,9 @@ def test_load_config_local_model_from_env(tmp_path, monkeypatch):
     monkeypatch.setenv("BETBONUS_LLM", LOCAL_27B_MODEL)
     monkeypatch.setenv("LLM_API_BASE", LOCAL_27B_API_BASE)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("LOCAL_LLM_API_KEY", raising=False)
+    monkeypatch.setattr("src.llm.client.LOCAL_ENV", path)
     cfg = load_iron_llm_config()
     assert cfg.model == LOCAL_27B_MODEL
     assert cfg.local is True

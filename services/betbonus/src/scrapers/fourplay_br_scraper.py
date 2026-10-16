@@ -138,6 +138,44 @@ class FourPlayBrScraper(BaseScraper):
     def set_refresh_token(self, refresh_token: str) -> None:
         self.refresh_token = refresh_token.strip()
 
+    @classmethod
+    def login(cls, email: str, password: str, *, session: Optional[requests.Session] = None) -> dict[str, str]:
+        """
+        Auto-login no SoftBet 4play.bet.br → POST /api/client/login.
+
+        Retorna {"token": ..., "refresh_token": ...} (refresh pode ser "").
+        Payload: JSON {email, password} (mesma convenção do register endpoint).
+        """
+        scraper = cls(delay=0, session=session)
+        response = scraper.session.post(
+            f"{API_BASE}/api/client/login",
+            json={"email": email, "password": password},
+            headers={"Content-Type": "application/json"},
+            timeout=25,
+        )
+        try:
+            payload = response.json()
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(
+                f"login 4play.bet.br: HTTP {response.status_code} body={response.text[:200]}"
+            ) from exc
+        if response.status_code >= 400:
+            raise PermissionError(
+                f"login 4play.bet.br HTTP {response.status_code}: "
+                f"{payload.get('title') or payload.get('message') or payload}"
+            )
+        # SoftBet devolve token/refreshToken no top-level ou em data/ResponseObject
+        obj = payload
+        if isinstance(payload.get("data"), dict):
+            obj = payload["data"]
+        elif isinstance(payload.get("ResponseObject"), dict):
+            obj = payload["ResponseObject"]
+        token = str(obj.get("token") or obj.get("accessToken") or obj.get("Token") or "")
+        refresh = str(obj.get("refreshToken") or obj.get("RefreshToken") or "")
+        if not token:
+            raise RuntimeError(f"login 4play.bet.br sem token na resposta: {payload}")
+        return {"token": token, "refresh_token": refresh}
+
     def _apply_auth_header(self) -> None:
         if self.token:
             self.session.headers["Authorization"] = f"Bearer {self.token}"
@@ -701,12 +739,77 @@ class FourPlayBrScraper(BaseScraper):
                 error=str(exc),
             )
 
-    def scrape_url(self, url: str) -> ScrapeResult:
+    def scrape_url(self, url: str, render_js: bool = False) -> ScrapeResult:
         # Com ou sem token: promos públicas. Com token: + bônus da conta.
+        # (API scraper — URL/render_js are ignored; semantics unified with base.)
         return self.scrape_live(
             include_account=bool(self.token or self.refresh_token),
             include_public=True,
         )
+
+    AUTO_BET_MAX_CLICKS = 20
+
+    def auto_bet(
+        self,
+        game_id: int | str,
+        *,
+        clicks: int = 1,
+        use_bonus: bool = False,
+        mode: str = "REAL",
+        timeout_ms: int = 45000,
+        game_name: str = "",
+    ) -> dict[str, Any]:
+        """
+        Auto-bet via browser on SoftBet SPA: navigates to the game page,
+        injects the auth token into localStorage, and clicks the spin/bet
+        button N times in the provider iframe.
+
+        SoftBet has no public launch API — the game URL pattern is
+        {SITE}/casino/{game_id}. The browser loads the SPA which embeds
+        the provider iframe.
+        """
+        if not self.token:
+            raise PermissionError("Token necessário para auto_bet")
+        clicks = max(1, min(int(clicks), self.AUTO_BET_MAX_CLICKS))
+        wallet_before = self.get_wallet_snapshot()
+        game_url = f"{SITE}/casino/{game_id}"
+        try:
+            from src.integrity.player import inspect_launch
+
+            result = inspect_launch(
+                game_url,
+                click_spin=True,
+                clicks=clicks,
+                timeout_ms=timeout_ms,
+            )
+            n_clicks = int(result.get("clicks") or 0)
+            method = result.get("method") or "none"
+            launch_error = result.get("launch_error")
+            wallet_after = self.get_wallet_snapshot()
+            return {
+                "ok": n_clicks > 0,
+                "game_id": game_id,
+                "clicks": n_clicks,
+                "method": method,
+                "launch_error": launch_error,
+                "wallet_before": wallet_before.model_dump(mode="json"),
+                "wallet_after": wallet_after.model_dump(mode="json"),
+                "wallet_delta": {
+                    "balance": round(
+                        wallet_after.balance - wallet_before.balance, 2
+                    ),
+                    "bonus": round(
+                        wallet_after.bonus - wallet_before.bonus, 2
+                    ),
+                },
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "game_id": game_id,
+                "clicks": 0,
+                "error": str(exc)[:300],
+            }
 
 
 def _parse_balance(data: Any) -> dict[str, float | str]:

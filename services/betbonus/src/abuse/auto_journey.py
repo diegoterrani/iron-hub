@@ -78,6 +78,7 @@ class AutoJourneyRunner:
         confirm_redeem: bool = True,
         confirm_real_withdraw: bool = False,
         confirm_real_bet: bool = True,
+        auto_bet_clicks: int = 1,
         settle_withdraw: bool = True,
         settle_timeout_s: int = 90,
         promocode_limit: int = 25,
@@ -157,6 +158,7 @@ class AutoJourneyRunner:
             confirm_redeem=confirm_redeem,
             confirm_real_withdraw=confirm_real_withdraw,
             confirm_real_bet=confirm_real_bet,
+            auto_bet_clicks=auto_bet_clicks,
             settle_withdraw=settle_withdraw,
             settle_timeout_s=settle_timeout_s,
             promocode_limit=promocode_limit,
@@ -367,6 +369,18 @@ def claim_all_bonuses(
 
     if confirm_redeem:
         for code in codes:
+            # Validate before redeeming to avoid noise from expired/invalid codes
+            if hasattr(scraper, "validate_promocode"):
+                v = scraper.validate_promocode(code)
+                # Support both response shapes: {"valid": bool} and {"ok": bool}
+                if not (v.get("valid") or v.get("ok")):
+                    results.append({
+                        "ok": False,
+                        "promocode": code,
+                        "error": f"skipped:{v.get('reason') or v.get('error') or 'invalid'}",
+                        "skipped": True,
+                    })
+                    continue
             try:
                 results.append(scraper.redeem_promocode(code, confirm_redeem=True))
             except Exception as exc:  # noqa: BLE001
@@ -457,18 +471,25 @@ def diagnose_withdraw_stuck(
     denied_n = sum(
         1 for x in items if str(x.get("status") or "").upper() in {"DENIED", "REJECTED"}
     )
+    # Historical denials are informational context, not a primary blocker.
+    # They only become the stuck point when a real withdraw was attempted
+    # (confirm_real_withdraw=True) and the BO denied it this run.
     if denied_n >= 2:
-        secondary.append("bo_denied_on_cash_withdraw_history")
+        secondary.append(f"bo_denied_on_cash_withdraw_history(n={denied_n})")
     if float(primary.get("max_convert_brl") or 0) > 0:
         secondary.append("max_convert_caps_extractable_value")
+
+    # Check for min_withdraw gate (balance below platform minimum)
+    min_wd_gated = bool(
+        withdraw_result
+        and "min_withdraw_gate" in (withdraw_result.get("gates") or [])
+    )
 
     if not confirm_real_withdraw:
         if "provider_autobet_missing_cannot_multiply" in secondary:
             stuck = "provider_autobet_missing_cannot_multiply"
         elif "rollover_incomplete_blocks_bonus_cashout" in secondary:
             stuck = "rollover_incomplete_blocks_bonus_cashout"
-        elif "bo_denied_on_cash_withdraw_history" in secondary:
-            stuck = "bo_denied_on_cash_withdraw_history"
         else:
             stuck = "withdraw_not_attempted_this_run"
         summary = (
@@ -477,6 +498,14 @@ def diagnose_withdraw_stuck(
             f"Δbalance={round(bal1 - bal0, 2)} Δbonus={round(bonus1 - bonus0, 2)} "
             f"rollover_restante={remaining}."
         )
+    elif min_wd_gated:
+        stuck = "below_min_withdraw_threshold"
+        summary = (
+            f"Saldo {bal1} abaixo do min_withdraw da casa — "
+            f"saque bloqueado pelo gate. "
+            f"msg={(withdraw_result or {}).get('message', '')}"
+        )
+        secondary = [stuck] + secondary
     elif not api_ok:
         stuck = "oracle_api_rejected"
         summary = f"API rejeitou saque: {(withdraw_result or {}).get('code')}"

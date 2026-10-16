@@ -103,6 +103,22 @@ class HouseAdapter(ABC):
             "launch de jogo exige API Salsa/aggregator — não reverse-engineer de provider",
         )
 
+    def auto_bet(
+        self,
+        game_id: int | str,
+        *,
+        clicks: int = 1,
+        use_bonus: bool = False,
+        mode: str = "REAL",
+        timeout_ms: int = 45000,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        raise UnsupportedCapability(
+            "auto_bet",
+            self.platform,
+            "stake no provider exige launch + browser spin — não mapeado nesta stack",
+        )
+
     def bonus_inventory(self) -> dict[str, Any]:
         raise UnsupportedCapability("bonus_inventory", self.platform)
 
@@ -126,6 +142,7 @@ class HouseAdapter(ABC):
             "list_games",
             "list_catalog",
             "start_game",
+            "auto_bet",
             "bonus_inventory",
             "freespin_inventory",
             "jackpot_state",

@@ -8,6 +8,9 @@ accounts simultaneously.
 from src.factory.identity import Identity, IdentityGenerator
 from src.factory.proxy import ProxyPool
 from src.factory.account_factory import AccountFactory, FactoryResult
+from src.factory.behavior import BehavioralFingerprint, BehavioralProfile
+from src.factory.scheduler import TimingScheduler, ScheduledEvent
+from src.factory.pnl import CampaignPnL, AccountPnL
 
 __all__ = [
     "Identity",
@@ -15,4 +18,10 @@ __all__ = [
     "ProxyPool",
     "AccountFactory",
     "FactoryResult",
+    "BehavioralFingerprint",
+    "BehavioralProfile",
+    "TimingScheduler",
+    "ScheduledEvent",
+    "CampaignPnL",
+    "AccountPnL",
 ]

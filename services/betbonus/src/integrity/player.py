@@ -14,7 +14,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[2]
-BROWSERS = ROOT / ".playwright"
+BROWSERS = Path.home() / ".cache" / "ms-playwright"
 SHOTS = ROOT / "data" / "integrity_play"
 
 os.environ.setdefault("PLAYWRIGHT_BROWSERS_PATH", str(BROWSERS))

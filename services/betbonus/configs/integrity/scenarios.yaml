@@ -131,7 +131,7 @@ scenarios:
     worker: slots_lab_play
     mode: CONFIRM_STAKE
     requires_stake: true
-    houses: [pagol_bet_br, 4play]
+    houses: [pagol_bet_br, 4play_bet_br, 4play]
     evidence: wallet delta após clique/Space no cliente; sem WS do provider
 
   - id: crash.high_ev_launch

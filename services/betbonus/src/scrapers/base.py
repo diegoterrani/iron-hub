@@ -29,12 +29,46 @@ class BaseScraper(ABC):
         self.session = session or requests.Session()
         self.session.headers.update(DEFAULT_HEADERS)
 
-    def fetch_html(self, url: str, timeout: float = 15.0) -> str:
+    def fetch_html(self, url: str, timeout: float = 15.0, render_js: bool = False) -> str:
+        """Fetch a URL's HTML.
+
+        ``render_js=True`` renders the page with a headless browser
+        (Playwright) before returning the final HTML — required for
+        JS-heavy promo pages that ship an empty shell to plain HTTP
+        clients. Falls back to plain HTTP when Playwright is not
+        installed or the browser fails to start.
+        """
         if self.delay > 0:
             time.sleep(self.delay)
+        if render_js:
+            html = self._render_with_playwright(url, timeout=timeout)
+            if html:
+                return html
         response = self.session.get(url, timeout=timeout)
         response.raise_for_status()
         return response.text
+
+    @staticmethod
+    def _render_with_playwright(url: str, timeout: float = 15.0) -> Optional[str]:
+        """Render ``url`` with headless Chromium. Returns "" when unavailable."""
+        try:
+            from playwright.sync_api import sync_playwright
+        except ImportError:
+            return ""
+        try:
+            with sync_playwright() as pw:
+                browser = pw.chromium.launch(headless=True)
+                try:
+                    page = browser.new_page(
+                        user_agent=DEFAULT_HEADERS["User-Agent"],
+                        locale="pt-BR",
+                    )
+                    page.goto(url, wait_until="networkidle", timeout=int(timeout * 1000))
+                    return page.content()
+                finally:
+                    browser.close()
+        except Exception:  # noqa: BLE001 — rendering is best-effort
+            return ""
 
     def load_html_file(self, path: str | Path) -> str:
         return Path(path).read_text(encoding="utf-8")
@@ -46,9 +80,16 @@ class BaseScraper(ABC):
     def extract_offers(self, soup: BeautifulSoup, source_url: str = "") -> list[BonusOffer]:
         raise NotImplementedError
 
-    def scrape_url(self, url: str) -> ScrapeResult:
+    def scrape_url(self, url: str, render_js: bool = False) -> ScrapeResult:
+        """Fetch ``url`` and extract offers.
+
+        Unified semantics: HTML scrapers fetch + parse the page; API
+        scrapers override this to call ``scrape_live()`` (the URL is
+        ignored). ``render_js=True`` renders JS-heavy pages with a
+        headless browser before parsing.
+        """
         try:
-            html = self.fetch_html(url)
+            html = self.fetch_html(url, render_js=render_js)
             offers = self.extract_offers(self.parse_soup(html), source_url=url)
             return ScrapeResult(platform=self.platform, source_url=url, offers=offers, ok=True)
         except Exception as exc:  # noqa: BLE001 — surface scrape errors as result

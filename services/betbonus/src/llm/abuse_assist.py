@@ -156,7 +156,7 @@ class AbuseLLMAssist:
         self.scoring = AbuseScoringEngine()
 
     def analyze_offer(
-        self, offer: BonusOffer, *, timeout: float = 90.0
+        self, offer: BonusOffer, *, timeout: float = 240.0
     ) -> dict[str, Any]:
         return self._analyze(
             offer,
@@ -174,7 +174,7 @@ class AbuseLLMAssist:
         *,
         prior_summary: str = "",
         prior_vectors: Optional[list[dict[str, Any]]] = None,
-        timeout: float = 120.0,
+        timeout: float = 300.0,
     ) -> dict[str, Any]:
         """Tentativa ofensiva reforçada — mais tokens/contexto sobre uma promo."""
         prior_ids = [
@@ -240,6 +240,7 @@ class AbuseLLMAssist:
             max_tokens=max_tokens,
             timeout=timeout,
             json_mode=True,
+            max_retries=2,
         )
         parsed = extract_json(result.text)
         retried = False
@@ -254,7 +255,7 @@ class AbuseLLMAssist:
                 "steps com 3 itens. protection_plan com 3 itens. Feche todas as chaves.\n"
                 f"Preview inválido:\n{(result.text or '')[:700]}"
             )
-            retry_timeout = min(timeout, 70.0)
+            retry_timeout = min(timeout, 120.0)
             result = self.client.complete(
                 [
                     {"role": "system", "content": system},
@@ -265,6 +266,7 @@ class AbuseLLMAssist:
                 max_tokens=min(max_tokens, 3500),
                 timeout=retry_timeout,
                 json_mode=True,
+                max_retries=2,
             )
             retry_parsed = extract_json(result.text)
             if llm_json_ok(retry_parsed, require_vectors=True) or not llm_json_ok(

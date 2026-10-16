@@ -2,6 +2,10 @@ import { NavLink } from 'react-router-dom'
 import { usePipelineCtx } from '../../context/PipelineContext'
 import type { PipelinePhase } from '../../lib/casino'
 
+interface Props {
+  onOpenReports: () => void
+}
+
 const NAV_ITEMS = [
   { path: '/recon', label: 'Recon', icon: '⊙', phase: 'Recon' as PipelinePhase },
   { path: '/auth', label: 'Auth', icon: '⊘', phase: 'Auth' as PipelinePhase },
@@ -21,7 +25,7 @@ const STATUS_COLORS: Record<string, string> = {
   pending: '#1e2d3d',
 }
 
-export default function Sidebar() {
+export default function Sidebar({ onOpenReports }: Props) {
   const pipeline = usePipelineCtx()
   const { phaseStatus } = pipeline
 
@@ -61,6 +65,29 @@ export default function Sidebar() {
             </NavLink>
           )
         })}
+        <div className="mx-3 my-2 border-t border-[#1e2d3d]" />
+        <button
+          onClick={onOpenReports}
+          className="flex items-center gap-2 px-3 py-[7px] text-[12px] transition-colors w-full text-[#6b7f94] hover:text-[#c8d6e5] hover:bg-[#121820]"
+        >
+          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: '#00e5ff' }} />
+          <span className="text-[11px] opacity-50">📋</span>
+          <span className="font-medium">Reports</span>
+        </button>
+        <NavLink
+          to="/campaign"
+          className={({ isActive }) =>
+            `flex items-center gap-2 px-3 py-[7px] text-[12px] transition-colors ${
+              isActive
+                ? 'bg-[#1a2330] text-[#00e5ff] border-r-2 border-[#00e5ff]'
+                : 'text-[#6b7f94] hover:text-[#c8d6e5] hover:bg-[#121820]'
+            }`
+          }
+        >
+          <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: '#ffb300' }} />
+          <span className="text-[11px] opacity-50">⊠</span>
+          <span className="font-medium">Campaign</span>
+        </NavLink>
       </div>
     </nav>
   )

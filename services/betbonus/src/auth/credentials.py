@@ -14,6 +14,7 @@ class PlatformCredentials(BaseModel):
     token: str = ""
     refresh_token: str = ""
     email: str = ""
+    document: str = ""
     label: str = ""
     updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -28,6 +29,7 @@ class PlatformCredentials(BaseModel):
         return {
             "platform": self.platform,
             "email": self.email,
+            "document": self.document,
             "label": self.label,
             "has_token": bool(self.token),
             "has_refresh_token": bool(self.refresh_token),
@@ -100,6 +102,7 @@ class CredentialsStore:
         platform: str,
         token: str,
         email: str = "",
+        document: str = "",
         label: str = "",
         refresh_token: str = "",
     ) -> dict[str, Any]:
@@ -112,6 +115,7 @@ class CredentialsStore:
             token=self._clean_secret(token),
             refresh_token=self._clean_secret(next_refresh),
             email=email or str(prev.get("email") or ""),
+            document=document or str(prev.get("document") or ""),
             label=label or str(prev.get("label") or ""),
         )
         # Persist without duplicating platform in the nested object

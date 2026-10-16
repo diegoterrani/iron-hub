@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -40,7 +41,7 @@ from src.models.bonus import BonusOffer, BonusType
 from src.nlp.analyzer import BonusNLPAnalyzer
 from src.notify.activity import ActivityLog
 from src.notify.journey_report import build_journey_markdown
-from src.notify.journey_session import JourneySessionStore
+from src.notify.journey_session import JourneySession, JourneySessionStore
 from src.pipeline.runner import BonusPipeline
 from src.scoring.abuse import AbuseScoringEngine, classify_abuse_severity
 from src.scoring.game_bonus_vectors import summarize_platform_game_risk
@@ -69,6 +70,8 @@ UPLOADS_DIR = DATA_DIR / "uploads"
 DASHBOARD_DIST = ROOT / "dashboard" / "dist"
 
 UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+JOURNEY_REPORTS_DIR = DATA_DIR / "reports" / "journey"
+JOURNEY_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
 
 app = FastAPI(title="BetBonus AI", version="0.5.1", docs_url="/api/docs", openapi_url="/api/openapi.json")
 app.add_middleware(
@@ -91,6 +94,54 @@ redis_cache = make_redis()
 abuse_scoring = AbuseScoringEngine()
 activity = ActivityLog()
 nlp = BonusNLPAnalyzer()
+
+
+def _journey_report_filename(session: "JourneySession", version: int) -> str:
+    """Builds Casa+Data+Versao filename for journey report persistence."""
+    casa = re.sub(r"[^a-zA-Z0-9]+", "_", session.house_name or session.platform or "unknown").strip("_")
+    date_str = session.started_at.strftime("%Y-%m-%d")
+    return f"{casa}_{date_str}_v{version}.md"
+
+
+def _next_journey_report_version(session_id: str) -> int:
+    """Returns the next version number for a session's saved reports."""
+    existing = list(JOURNEY_REPORTS_DIR.glob(f"*_{session_id[:8]}*.md"))
+    if not existing:
+        # Also check by session id embedded in filename
+        existing = [p for p in JOURNEY_REPORTS_DIR.glob("*.md") if session_id[:8] in p.stem]
+    versions = []
+    for p in existing:
+        m = re.search(r"_v(\d+)_", p.name)
+        if m:
+            versions.append(int(m.group(1)))
+    return max(versions, default=0) + 1
+
+
+def _save_journey_report(session: "JourneySession", markdown: str, version: Optional[int] = None) -> Path:
+    """Persists a journey report to disk. Returns the file path."""
+    if version is None:
+        version = _next_journey_report_version(session.id)
+    fname = _journey_report_filename(session, version)
+    # Embed session id in filename for unambiguous lookup
+    fname = fname.replace(".md", f"_{session.id[:8]}.md")
+    path = JOURNEY_REPORTS_DIR / fname
+    path.write_text(markdown, encoding="utf-8")
+    return path
+
+
+def _list_journey_reports(session_id: str) -> list[dict[str, Any]]:
+    """Lists all saved report versions for a session, newest first."""
+    reports = []
+    for p in sorted(JOURNEY_REPORTS_DIR.glob(f"*_{session_id[:8]}.md"), reverse=True):
+        m = re.search(r"_v(\d+)_", p.name)
+        ver = int(m.group(1)) if m else 0
+        reports.append({
+            "version": ver,
+            "filename": p.name,
+            "size_bytes": p.stat().st_size,
+            "modified_at": datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc).isoformat(),
+        })
+    return reports
 
 
 def _normalize_platform(platform: str) -> str:
@@ -501,6 +552,7 @@ class SaveTokenRequest(BaseModel):
     token: str
     refresh_token: str = ""
     email: str = ""
+    document: str = ""
     label: str = ""
 
 
@@ -508,6 +560,7 @@ class LoginRequest(BaseModel):
     platform: str = "4play"
     email: str
     password: str
+    document: str = ""
     label: str = ""
 
 
@@ -608,6 +661,7 @@ def save_token(platform: str, body: SaveTokenRequest) -> dict[str, Any]:
         token=token_in,
         refresh_token=refresh_in,
         email=body.email,
+        document=body.document,
         label=body.label,
     )
     pipeline._hydrate_tokens()
@@ -682,6 +736,7 @@ def login_platform(platform: str, body: LoginRequest) -> dict[str, Any]:
         platform=save_platform,
         token=token,
         email=body.email,
+        document=body.document,
         label=body.label or body.email,
     )
     pipeline._hydrate_tokens()
@@ -960,6 +1015,8 @@ def active_journey_session() -> dict[str, Any]:
 
 @app.post("/api/journey/sessions")
 def start_journey_session(body: JourneySessionStartRequest) -> dict[str, Any]:
+    # Captura a sessão anterior ativa antes de fechar
+    previous_active = journey_sessions.active() if body.close_previous else None
     session = journey_sessions.start(
         platform=body.platform,
         house_name=body.house_name,
@@ -969,6 +1026,16 @@ def start_journey_session(body: JourneySessionStartRequest) -> dict[str, Any]:
         meta=body.meta,
         close_previous=body.close_previous,
     )
+    # Persiste relatório da sessão anterior ao ser fechada
+    if previous_active:
+        prev_md = build_journey_markdown(previous_active)
+        prev_path = _save_journey_report(previous_active, prev_md)
+        activity.add(
+            "journey.session.auto_close",
+            f"Sessão anterior {previous_active.id[:8]} fechada · relatório: {prev_path.name}",
+            level="info",
+            meta={"session_id": previous_active.id, "report_file": prev_path.name},
+        )
     activity.add(
         "journey.session.start",
         f"Sessão de logs {session.id[:8]} · {session.house_name or session.platform}",
@@ -1015,13 +1082,21 @@ def close_journey_session(session_id: str, body: JourneySessionCloseRequest) -> 
         session = journey_sessions.close(session_id, note=body.note)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="Sessão não encontrada") from exc
+    # Persiste o relatório final em disco (Casa_Data_vN)
+    markdown = build_journey_markdown(session)
+    report_path = _save_journey_report(session, markdown)
     activity.add(
         "journey.session.close",
-        f"Sessão {session_id[:8]} encerrada",
+        f"Sessão {session_id[:8]} encerrada · relatório salvo: {report_path.name}",
         level="info",
-        meta={"session_id": session_id},
+        meta={"session_id": session_id, "report_file": report_path.name},
     )
-    return {"ok": True, "session": session.model_dump(mode="json")}
+    return {
+        "ok": True,
+        "session": session.model_dump(mode="json"),
+        "report_file": report_path.name,
+        "report_path": str(report_path),
+    }
 
 
 @app.delete("/api/journey/sessions/{session_id}")
@@ -1215,6 +1290,7 @@ class AutoJourneyRequest(BaseModel):
     confirm_redeem: bool = True
     confirm_real_withdraw: bool = False
     confirm_real_bet: bool = True
+    auto_bet_clicks: int = Field(default=1, ge=1, le=500)
     settle_withdraw: bool = True
     settle_timeout_s: int = Field(default=90, ge=10, le=300)
     promocode_limit: int = Field(default=20, ge=0, le=80)
@@ -1225,6 +1301,7 @@ class AutoJourneyRequest(BaseModel):
     recon_use_llm: bool = True
     recon_refresh: bool = False
     recon_timeout_s: float = Field(default=45.0, ge=5.0, le=120.0)
+    sprint_mode: bool = False  # I7: skip LLM, minimal polling, faster iteration
 
 
 @app.get("/api/abuse/games/high-ev")
@@ -1234,14 +1311,11 @@ def abuse_games_high_ev(
 ) -> dict[str, Any]:
     """Discovery de jogos high-EV (crash/mines/plinko/aviator) na casa autenticada."""
     plat = _normalize_platform(platform)
-    if plat != "pagol_bet_br":
-        raise HTTPException(
-            status_code=400,
-            detail="Discovery high-EV live só implementado para pagol_bet_br neste lab.",
-        )
 
     def _run() -> dict[str, Any]:
-        return _pagol_scraper().discover_high_ev_games(max_games=max_games)
+        if plat == "pagol_bet_br":
+            return _pagol_scraper().discover_high_ev_games(max_games=max_games)
+        return _fourplay_scraper().discover_high_ev_games()
 
     data = _house_call(_run)
     activity.add(
@@ -1260,16 +1334,16 @@ def abuse_games_probe_contribution(body: HighEvProbeRequest) -> dict[str, Any]:
     Não envia aposta ao provider — contribuição % real ainda exige stake manual/controlado.
     """
     plat = _normalize_platform(body.platform)
-    if plat != "pagol_bet_br":
-        raise HTTPException(
-            status_code=400,
-            detail="Probe high-EV só implementado para pagol_bet_br neste lab.",
-        )
 
     def _run() -> dict[str, Any]:
-        return _pagol_scraper().probe_high_ev_contribution(
-            limit=body.limit,
-            include_bonus_flag=body.include_bonus_flag,
+        if plat == "pagol_bet_br":
+            return _pagol_scraper().probe_high_ev_contribution(
+                limit=body.limit,
+                include_bonus_flag=body.include_bonus_flag,
+            )
+        return _fourplay_scraper().probe_high_ev_contribution(
+            max_probes=body.limit,
+            use_bonus_balance=body.include_bonus_flag,
         )
 
     data = _house_call(_run)
@@ -1391,10 +1465,18 @@ def abuse_auto_journey_run(body: AutoJourneyRequest) -> dict[str, Any]:
             poll_s = max(poll_s, 30)
             settle_s = max(settle_s, 120)
             deep = True
+        # I7: sprint_mode — skip LLM, minimal polling, faster iteration
+        if body.sprint_mode:
+            llm_limit = 0
+            deep = False
+            poll_s = min(poll_s, 5)
+            settle_s = min(settle_s, 30)
+            promo_limit = min(promo_limit, 5)
         return runner.run(
             confirm_redeem=body.confirm_redeem,
             confirm_real_withdraw=body.confirm_real_withdraw,
             confirm_real_bet=body.confirm_real_bet,
+            auto_bet_clicks=body.auto_bet_clicks,
             settle_withdraw=body.settle_withdraw,
             settle_timeout_s=settle_s,
             promocode_limit=promo_limit,
@@ -1607,20 +1689,23 @@ def abuse_games_bonus_multiplier(body: BonusMultiplierLabRequest) -> dict[str, A
     provider_url para stake mínimo manual/operador dentro do teto lab.
     """
     plat = _normalize_platform(body.platform)
-    if plat != "pagol_bet_br":
-        raise HTTPException(
-            status_code=400,
-            detail="Bonus multiplier lab só implementado para pagol_bet_br.",
-        )
 
     def _run() -> dict[str, Any]:
-        return _pagol_scraper().run_bonus_multiplier_lab(
-            promocode=body.promocode,
+        if plat == "pagol_bet_br":
+            return _pagol_scraper().run_bonus_multiplier_lab(
+                promocode=body.promocode,
+                game_id=body.game_id,
+                stake_brl=body.stake_brl,
+                confirm_redeem=body.confirm_redeem,
+                confirm_real_bet=body.confirm_real_bet,
+                use_bonus_balance=body.use_bonus_balance,
+                poll_seconds=body.poll_seconds,
+            )
+        return _fourplay_scraper().run_bonus_multiplier_lab(
             game_id=body.game_id,
             stake_brl=body.stake_brl,
-            confirm_redeem=body.confirm_redeem,
-            confirm_real_bet=body.confirm_real_bet,
             use_bonus_balance=body.use_bonus_balance,
+            confirm_real_bet=body.confirm_real_bet,
             poll_seconds=body.poll_seconds,
         )
 
@@ -2129,12 +2214,14 @@ def journey_session_report_md(session_id: str, body: JourneyReportRequest) -> Re
             "withdraw_result": body.withdraw_result,
         },
     )
-    fname = f"betbonus-journey-{session_id[:8]}.md"
+    # Persiste a versão completa (com extras da UI) em disco
+    report_path = _save_journey_report(session, markdown)
+    fname = report_path.name
     activity.add(
         "journey.report.md",
-        f"Relatório MD gerado · sessão {session_id[:8]}",
+        f"Relatório MD gerado e salvo · sessão {session_id[:8]} · {report_path.name}",
         level="success",
-        meta={"session_id": session_id, "bytes": len(markdown.encode('utf-8'))},
+        meta={"session_id": session_id, "bytes": len(markdown.encode('utf-8')), "report_file": report_path.name},
     )
     return Response(
         content=markdown,
@@ -2144,11 +2231,34 @@ def journey_session_report_md(session_id: str, body: JourneyReportRequest) -> Re
 
 
 @app.get("/api/journey/sessions/{session_id}/report.md")
-def journey_session_report_md_get(session_id: str) -> PlainTextResponse:
-    """Download rápido só com timeline da sessão (sem extras da UI)."""
+def journey_session_report_md_get(session_id: str, filename: str | None = None) -> PlainTextResponse:
+    """Serve o relatório salvo em disco. Com `filename`, serve a versão específica; sem, a última."""
     session = journey_sessions.get(session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    # Versão específica por filename
+    if filename:
+        # Sanitize: only allow .md filenames within the reports dir
+        safe_name = Path(filename).name
+        path = JOURNEY_REPORTS_DIR / safe_name
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail=f"Relatório {safe_name} não encontrado")
+        return PlainTextResponse(
+            content=path.read_text(encoding="utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
+    # Default: última versão persistida
+    saved = _list_journey_reports(session_id)
+    if saved:
+        latest = saved[0]
+        path = JOURNEY_REPORTS_DIR / latest["filename"]
+        return PlainTextResponse(
+            content=path.read_text(encoding="utf-8"),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="{latest["filename"]}"'},
+        )
+    # Fallback: gera sem persistir
     markdown = build_journey_markdown(session)
     fname = f"betbonus-journey-{session_id[:8]}.md"
     return PlainTextResponse(
@@ -2156,6 +2266,60 @@ def journey_session_report_md_get(session_id: str) -> PlainTextResponse:
         media_type="text/markdown; charset=utf-8",
         headers={"Content-Disposition": f'attachment; filename="{fname}"'},
     )
+
+
+@app.get("/api/journey/sessions/{session_id}/reports")
+def list_journey_session_reports(session_id: str) -> list[dict[str, Any]]:
+    """Lista todas as versões salvas do relatório da sessão (para re-teste/complemento)."""
+    session = journey_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Sessão não encontrada")
+    return _list_journey_reports(session_id)
+
+
+@app.get("/api/journey/reports/all")
+def list_all_journey_reports() -> dict[str, Any]:
+    """Lista todos os relatórios de jornada agrupados por casa.
+
+    Retorna:
+        {
+          "houses": [
+            {
+              "house_name": "4Play",
+              "platform": "4play",
+              "session_id": "8a3c9d87...",
+              "session_status": "closed",
+              "started_at": "...",
+              "ended_at": "..." or null,
+              "reports": [
+                {"version": 1, "filename": "...", "size_bytes": 1609, "modified_at": "..."}
+              ]
+            }
+          ],
+          "total_reports": 6
+        }
+    """
+    sessions = journey_sessions.list(limit=200)
+    houses: list[dict[str, Any]] = []
+    total_reports = 0
+
+    for s in sessions:
+        reports = _list_journey_reports(s["id"])
+        total_reports += len(reports)
+        houses.append({
+            "house_name": s.get("house_name") or s.get("platform", ""),
+            "platform": s.get("platform", ""),
+            "house_url": s.get("house_url", ""),
+            "session_id": s["id"],
+            "session_status": s.get("status", ""),
+            "started_at": s.get("started_at"),
+            "ended_at": s.get("ended_at"),
+            "event_count": s.get("event_count", 0),
+            "last_message": s.get("last_message", ""),
+            "reports": reports,
+        })
+
+    return {"houses": houses, "total_reports": total_reports}
 
 
 class TargetGameBody(BaseModel):
@@ -2461,6 +2625,160 @@ def integrity_plan(body: IntegrityPlanRequest) -> dict[str, Any]:
         )
     plan = IntegrityPlanner(catalog=cat).plan(run_obj, use_llm=body.use_llm)
     return {"ok": True, "plan": plan}
+
+
+# --- Campaign (Phase 4) ---
+
+import threading
+import uuid as _uuid
+
+_active_campaigns: dict[str, dict] = {}
+
+
+class CampaignConfigRequest(BaseModel):
+    accounts: int = 10
+    platforms: list[str] = ["pagol_bet_br"]
+    stagger_minutes: int = 10
+    max_parallel: int = 4
+    retry_failed: bool = True
+    wager_method: str = "api"
+    dry_run: bool = True
+
+
+class CampaignStatusResponse(BaseModel):
+    campaign_id: str
+    status: str
+    progress: dict
+
+
+def _campaign_worker(campaign_id: str, config_dict: dict) -> None:
+    """Background thread that runs the campaign and stores results."""
+    try:
+        from src.factory.account_factory import AccountFactory
+        from src.factory.campaign_runner import CampaignConfig, CampaignRunner
+
+        factory = AccountFactory(platforms=config_dict.get("platforms", ["pagol_bet_br"]))
+        runner = CampaignRunner(factory=factory)
+
+        config = CampaignConfig(
+            accounts=config_dict.get("accounts", 10),
+            platforms=config_dict.get("platforms", ["pagol_bet_br"]),
+            stagger_minutes=config_dict.get("stagger_minutes", 10),
+            max_parallel=config_dict.get("max_parallel", 4),
+            retry_failed=config_dict.get("retry_failed", True),
+            max_retries=config_dict.get("max_retries", 2),
+            wager_method=config_dict.get("wager_method", "api"),
+            withdraw_split=config_dict.get("withdraw_split", True),
+            dry_run=config_dict.get("dry_run", True),
+        )
+
+        _active_campaigns[campaign_id]["status"] = "running"
+        report = runner.run(config)
+        report.campaign_id = campaign_id
+
+        _active_campaigns[campaign_id].update({
+            "status": "completed",
+            "report": report.to_dict(),
+            "progress": runner.progress(report),
+            "finished_at": datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        _active_campaigns[campaign_id].update({
+            "status": "error",
+            "error": str(exc),
+            "progress": {"total": 0, "completed": 0, "failed": 0, "in_progress": 0, "pct": 0.0},
+        })
+
+
+@app.post("/api/campaign/run")
+async def run_campaign(req: CampaignConfigRequest) -> dict[str, Any]:
+    """Launch a multi-account bonus extraction campaign."""
+    campaign_id = f"camp-{_uuid.uuid4().hex[:12]}"
+    config_dict = req.model_dump()
+
+    _active_campaigns[campaign_id] = {
+        "campaign_id": campaign_id,
+        "status": "pending",
+        "config": config_dict,
+        "progress": {"total": req.accounts, "completed": 0, "failed": 0, "in_progress": 0, "pct": 0.0},
+        "started_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    thread = threading.Thread(
+        target=_campaign_worker,
+        args=(campaign_id, config_dict),
+        daemon=True,
+    )
+    thread.start()
+
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "status": "pending",
+        "message": f"Campaign launched with {req.accounts} accounts on {req.platforms}",
+    }
+
+
+@app.get("/api/campaign/{campaign_id}")
+async def get_campaign_status(campaign_id: str) -> dict[str, Any]:
+    """Get campaign progress + P&L."""
+    entry = _active_campaigns.get(campaign_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Campaign {campaign_id} not found")
+
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "status": entry.get("status", "unknown"),
+        "progress": entry.get("progress", {}),
+        "started_at": entry.get("started_at"),
+        "finished_at": entry.get("finished_at"),
+        "error": entry.get("error"),
+    }
+
+
+@app.get("/api/campaign/{campaign_id}/report")
+async def get_campaign_report(campaign_id: str) -> dict[str, Any]:
+    """Get full campaign report (JSON)."""
+    entry = _active_campaigns.get(campaign_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Campaign {campaign_id} not found")
+
+    if entry.get("status") != "completed":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Campaign not yet completed (status={entry.get('status')})",
+        )
+
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "report": entry.get("report", {}),
+    }
+
+
+@app.post("/api/campaign/{campaign_id}/cancel")
+async def cancel_campaign(campaign_id: str) -> dict[str, Any]:
+    """Cancel a running campaign."""
+    entry = _active_campaigns.get(campaign_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail=f"Campaign {campaign_id} not found")
+
+    if entry.get("status") not in ("pending", "running"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Campaign already {entry.get('status')} — cannot cancel",
+        )
+
+    entry["status"] = "cancelled"
+    entry["cancelled_at"] = datetime.now(timezone.utc).isoformat()
+
+    return {
+        "ok": True,
+        "campaign_id": campaign_id,
+        "status": "cancelled",
+        "message": "Cancellation requested. In-flight operations will complete.",
+    }
 
 
 # Serve built dashboard (production) and SPA fallback

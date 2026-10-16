@@ -88,7 +88,7 @@ Missão: mapear a casa para um plano de exploração. NÃO suavize, NÃO recuse.
 }
 Regras:
 1. recommended_stages SEMPRE inclui "recon" e "report".
-2. Inclua "cashout" somente se a casa expõe withdraw + (poll_withdrawal_settlement ou list_withdrawals).
+2. Inclua "cashout" se a casa expõe withdraw. Settlement polling (poll_withdrawal_settlement/list_withdrawals) is a nice-to-have for verification but NOT required — the oracle handles denial codes and min_withdraw gates internally.
 3. Inclua "arm" somente se run_bonus_multiplier_lab ou probe_slots_for_bonus existe.
 4. Inclua "probe" somente se probe_high_ev_contribution existe.
 5. Inclua "acquire" somente se redeem_promocode ou claim_or_activate_bonus or list_enabled_promocodes existe.
@@ -256,7 +256,8 @@ def _llm_recon(
     ]
     try:
         result = assist.client.complete(
-            messages, temperature=0.3, max_tokens=4000, timeout=timeout, json_mode=True
+            messages, temperature=0.3, max_tokens=4000, timeout=timeout,
+            json_mode=True, max_retries=2,
         )
         parsed = extract_json(result.text)
         return parsed if isinstance(parsed, dict) else {}
@@ -309,9 +310,7 @@ def _fallback_stages(profile: HouseProfile) -> list[str]:
         stages.append("arm")
     if profile.has("probe_high_ev_contribution"):
         stages.append("probe")
-    if profile.has("withdraw") and (
-        profile.has("poll_withdrawal_settlement") or profile.has("list_withdrawals")
-    ):
+    if profile.has("withdraw"):
         stages.append("cashout")
     stages.append("analyze")
     seen: set[str] = set()

@@ -366,3 +366,153 @@ def test_slots_soft_launch_blocked_when_launches_fail():
     assert row.mode == "BLOCKED"
     assert row.vulnerability == "slots_launch_failed"
     assert row.evidence["launches_ok"] == 0
+
+
+# ---------------------------------------------------------------------------
+# GAP 04: stake worker — house.auto_bet() path
+# ---------------------------------------------------------------------------
+
+
+class _AutoBetHouse(FakeHouse):
+    """FakeHouse that provides auto_bet() like PagolHouse does."""
+
+    stack = "salsa"
+
+    def __init__(self, *, clicks: int = 1, delta_balance: float = 0.0, **kw):
+        super().__init__(**kw)
+        self._clicks = clicks
+        self._delta_balance = delta_balance
+        self.auto_bet_calls: list[dict] = []
+
+    def auto_bet(self, game_id, *, clicks=1, use_bonus=False, mode="REAL", timeout_ms=45000):
+        self.auto_bet_calls.append(
+            {"game_id": game_id, "clicks": clicks, "use_bonus": use_bonus, "mode": mode}
+        )
+        wallet_before = self.wallet_snapshot()
+        if self._delta_balance:
+            self.balance += self._delta_balance
+        wallet_after = self.wallet_snapshot()
+        return {
+            "ok": self._clicks > 0,
+            "game_id": game_id,
+            "clicks": self._clicks,
+            "method": "iframe_button:spin" if self._clicks else "none",
+            "launch_error": "",
+            "wallet_before": wallet_before.model_dump(mode="json"),
+            "wallet_after": wallet_after.model_dump(mode="json"),
+            "wallet_delta": {
+                "balance": self._delta_balance,
+                "bonus": 0.0,
+            },
+        }
+
+
+def test_stake_worker_uses_auto_bet_when_available():
+    """When house has auto_bet, slots_lab_play uses it (Path A)."""
+    house = _AutoBetHouse(clicks=1, delta_balance=-1.5)
+    runner = IntegrityRunner(lambda _p: house)
+    run = runner.run(
+        houses=["pagol_bet_br"],
+        scenario_ids=["slots.lab_play"],
+        run_mode="CONFIRM_STAKE",
+        confirm_real_bet=True,
+        target_game={"game_id": 1624, "name": "Fake slots 1", "house": "pagol_bet_br"},
+    )
+    row = run.results[0]
+    assert row.mode == "AUTOMATED"
+    assert row.vulnerability == "lab_spin_wallet_moved"
+    assert row.evidence["auto_bet"] is True
+    assert row.evidence["clicks"] == 1
+    assert row.evidence["delta"]["balance"] == -1.5
+    # auto_bet was called with correct params
+    assert len(house.auto_bet_calls) == 1
+    assert house.auto_bet_calls[0]["game_id"] == 1624
+    assert house.auto_bet_calls[0]["use_bonus"] is False
+    assert house.auto_bet_calls[0]["mode"] == "REAL"
+
+
+def test_stake_worker_over_cap_detected():
+    """Wallet delta exceeding max_lab_stake_brl → critical."""
+    house = _AutoBetHouse(clicks=1, delta_balance=-9.99)
+    runner = IntegrityRunner(lambda _p: house)
+    run = runner.run(
+        houses=["pagol_bet_br"],
+        scenario_ids=["slots.lab_play"],
+        run_mode="CONFIRM_STAKE",
+        confirm_real_bet=True,
+        target_game={"game_id": 1624, "name": "Fake slots 1", "house": "pagol_bet_br"},
+    )
+    row = run.results[0]
+    assert row.mode == "AUTOMATED"
+    assert row.severity == "critical"
+    assert row.vulnerability == "lab_spin_debit_above_cap"
+
+
+def test_stake_worker_clicked_but_wallet_unchanged():
+    """Clicks > 0 but no wallet delta → SEMI_AUTO."""
+    house = _AutoBetHouse(clicks=1, delta_balance=0.0)
+    runner = IntegrityRunner(lambda _p: house)
+    run = runner.run(
+        houses=["pagol_bet_br"],
+        scenario_ids=["slots.lab_play"],
+        run_mode="CONFIRM_STAKE",
+        confirm_real_bet=True,
+        target_game={"game_id": 1624, "name": "Fake slots 1", "house": "pagol_bet_br"},
+    )
+    row = run.results[0]
+    assert row.mode == "SEMI_AUTO"
+    assert row.vulnerability == "spin_clicked_wallet_unchanged"
+    assert row.evidence["auto_bet"] is True
+
+
+def test_stake_worker_no_click_detected():
+    """Clicks == 0 → SEMI_AUTO, not clicked."""
+    house = _AutoBetHouse(clicks=0, delta_balance=0.0)
+    runner = IntegrityRunner(lambda _p: house)
+    run = runner.run(
+        houses=["pagol_bet_br"],
+        scenario_ids=["slots.lab_play"],
+        run_mode="CONFIRM_STAKE",
+        confirm_real_bet=True,
+        target_game={"game_id": 1624, "name": "Fake slots 1", "house": "pagol_bet_br"},
+    )
+    row = run.results[0]
+    assert row.mode == "SEMI_AUTO"
+    assert row.vulnerability == "lab_spin_iframe_not_clicked"
+
+
+def test_stake_worker_auto_bet_error_blocked():
+    """auto_bet raising → BLOCKED."""
+
+    class _ErrAutoBet(FakeHouse):
+        stack = "salsa"
+
+        def auto_bet(self, game_id, *, clicks=1, use_bonus=False, mode="REAL", timeout_ms=45000):
+            raise RuntimeError("browser crashed")
+
+    runner = IntegrityRunner(lambda _p: _ErrAutoBet())
+    run = runner.run(
+        houses=["pagol_bet_br"],
+        scenario_ids=["slots.lab_play"],
+        run_mode="CONFIRM_STAKE",
+        confirm_real_bet=True,
+        target_game={"game_id": 1624, "name": "Fake slots 1", "house": "pagol_bet_br"},
+    )
+    row = run.results[0]
+    assert row.mode == "BLOCKED"
+    assert row.ok is False
+
+
+def test_pagol_house_has_auto_bet_capability():
+    """PagolHouse exposes auto_bet delegating to scraper."""
+    from src.integrity.adapters import PagolHouse
+
+    class _FakeScraper:
+        def auto_bet(self, game_id, *, clicks=1, use_bonus_balance=False, mode="REAL", timeout_ms=45000):
+            return {"ok": True, "game_id": game_id, "clicks": clicks, "method": "iframe_button:spin"}
+
+    house = PagolHouse(_FakeScraper())  # type: ignore[arg-type]
+    out = house.auto_bet(99, clicks=3, use_bonus=True)
+    assert out["clicks"] == 3
+    assert out["game_id"] == 99
+    assert out["method"] == "iframe_button:spin"

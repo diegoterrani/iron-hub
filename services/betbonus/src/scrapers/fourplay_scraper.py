@@ -16,6 +16,17 @@ from src.scrapers.base import BaseScraper
 API_BASE = "https://api.4play.game/api/v1"
 SITE = "https://4play.game"
 
+HIGH_EV_SEARCH_TERMS = (
+    "mines", "aviator", "crash", "plinko", "dice",
+    "spaceman", "jetx", "rocket", "limbo", "flyx",
+)
+HIGH_EV_NAME_RE = re.compile(
+    r"\b(?:mines?|aviator|aviatrix|crash|plinko|dice|spaceman|jetx|rocket|limbo|flyx|kick\s*crash)\b",
+    re.IGNORECASE,
+)
+MAX_LAB_STAKE_BRL = 5.0
+DEFAULT_LAB_STAKE_BRL = 1.0
+
 # Valores de `category` na API (não traduzir para EN plural).
 CASINO_CATEGORY = {
     "slots": "Slot",
@@ -58,6 +69,7 @@ class FourPlayScraper(BaseScraper):
     default_delay = 0.35
     MIN_WITHDRAW_AMOUNT = 10_000.0  # CRC (UI + API ERR_AMOUNT_IS_TOO_LOW)
     MAX_WITHDRAW_AMOUNT = 100_000.0  # CRC (UI cap)
+    AUTO_BET_MAX_CLICKS = 20
 
     def __init__(
         self,
@@ -374,6 +386,84 @@ class FourPlayScraper(BaseScraper):
             out["error"] = "launch sem URL (token ok? body gameCode?)"
         return out
 
+    def auto_bet(
+        self,
+        game_id: int | str,
+        *,
+        clicks: int = 1,
+        use_bonus_balance: bool = False,
+        mode: str = "REAL",
+        timeout_ms: int = 45000,
+        game_code: str = "",
+        aggregator: str = "",
+        game_name: str = "",
+    ) -> dict[str, Any]:
+        """
+        Auto-bet via browser: launches game session in headless Chromium and
+        clicks the spin/bet button N times in the provider iframe.
+
+        Uses start_game to get the one-use Salsa/aggregator URL, then
+        integrity.player.inspect_launch to open the URL and perform spin clicks.
+        The provider's default stake is used (no bet-size UI manipulation).
+        """
+        if not self.token:
+            raise PermissionError("Token necessário para auto_bet")
+        clicks = max(1, min(int(clicks), self.AUTO_BET_MAX_CLICKS))
+        wallet_before = self.get_wallet_snapshot()
+        launch = self.start_game(
+            game_id,
+            mode=mode,
+            use_bonus_balance=use_bonus_balance,
+            game_code=game_code,
+            aggregator=aggregator,
+            game_name=game_name,
+        )
+        salsa_url = str(launch.get("url") or "")
+        if not salsa_url:
+            return {
+                "ok": False,
+                "error": "no launch URL returned",
+                "game_id": game_id,
+                "clicks": 0,
+            }
+        try:
+            from src.integrity.player import inspect_launch
+
+            result = inspect_launch(
+                salsa_url,
+                click_spin=True,
+                clicks=clicks,
+                timeout_ms=timeout_ms,
+            )
+            n_clicks = int(result.get("clicks") or 0)
+            method = result.get("method") or "none"
+            launch_error = result.get("launch_error")
+            wallet_after = self.get_wallet_snapshot()
+            return {
+                "ok": n_clicks > 0,
+                "game_id": game_id,
+                "clicks": n_clicks,
+                "method": method,
+                "launch_error": launch_error,
+                "wallet_before": wallet_before.model_dump(mode="json"),
+                "wallet_after": wallet_after.model_dump(mode="json"),
+                "wallet_delta": {
+                    "balance": round(
+                        wallet_after.balance - wallet_before.balance, 2
+                    ),
+                    "bonus": round(
+                        wallet_after.bonus - wallet_before.bonus, 2
+                    ),
+                },
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "game_id": game_id,
+                "clicks": 0,
+                "error": str(exc)[:300],
+            }
+
     def get_promotion(self, slug: str) -> dict[str, Any]:
         return self._get_json(f"/site/promotions/{slug}")
 
@@ -506,8 +596,327 @@ class FourPlayScraper(BaseScraper):
                 error=str(exc),
             )
 
-    def scrape_url(self, url: str) -> ScrapeResult:
+    def scrape_url(self, url: str, render_js: bool = False) -> ScrapeResult:
+        # API scraper — URL/render_js are ignored; semantics unified with base.
         return self.scrape_live()
+
+
+
+    def discover_high_ev_games(
+        self,
+        *,
+        terms: tuple[str, ...] | list[str] | None = None,
+        per_page: int = 50,
+        max_terms: int = 10,
+    ) -> dict[str, Any]:
+        """Search 4play casino catalog for high-EV games by term."""
+        if not self.token:
+            raise PermissionError("Token necessário para GET /casino/games")
+        terms = tuple(terms) if terms else HIGH_EV_SEARCH_TERMS
+        term_hits: dict[str, int] = {}
+        games: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for term in terms[:max_terms]:
+            batch = self.list_casino_games(search=term, page=1, per_page=per_page)
+            items = batch.get("items") or []
+            term_hits[term] = int(batch.get("total") or len(items))
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                key = str(item.get("id") or item.get("gameCode") or "")
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                games.append({
+                    "id": item.get("id"),
+                    "game_code": item.get("gameCode"),
+                    "name": item.get("gameName") or item.get("name"),
+                    "provider": item.get("provider"),
+                    "aggregator": item.get("aggregator"),
+                    "category": item.get("category"),
+                    "match_term": term,
+                })
+        enriched = [
+            g for g in games
+            if HIGH_EV_NAME_RE.search(str(g.get("name") or ""))
+        ]
+        return {
+            "platform": self.platform,
+            "terms": list(terms),
+            "term_hits": term_hits,
+            "count": len(games),
+            "enriched": len(enriched),
+            "games": games[:100],
+            "site_play_path": f"{SITE}/casino",
+        }
+
+    def probe_high_ev_contribution(
+        self,
+        *,
+        terms: tuple[str, ...] | list[str] | None = None,
+        max_probes: int = 5,
+        use_bonus_balance: bool = False,
+    ) -> dict[str, Any]:
+        """Probe high-EV games on 4play: open session, compare wallet before/after."""
+        discovery = self.discover_high_ev_games(terms=terms)
+        candidates = discovery.get("games") or []
+        probes: list[dict[str, Any]] = []
+        findings: list[dict[str, Any]] = []
+        wallet_before: Optional[WalletSnapshot] = None
+        wallet_after: Optional[WalletSnapshot] = None
+        for game in candidates[:max_probes]:
+            gid = game.get("id") or game.get("game_code")
+            if not gid:
+                continue
+            try:
+                if wallet_before is None:
+                    wallet_before = self.get_wallet_snapshot()
+                launch = self.start_game(
+                    gid,
+                    use_bonus_balance=use_bonus_balance,
+                )
+                time.sleep(1.5)
+                wallet_after = self.get_wallet_snapshot()
+                probes.append({
+                    "game_id": gid,
+                    "name": game.get("name"),
+                    "provider": game.get("provider"),
+                    "aggregator": game.get("aggregator"),
+                    "launch_url": launch.get("url", ""),
+                    "for_fun": launch.get("for_fun"),
+                    "wallet_type": launch.get("wallet_type"),
+                })
+            except Exception as exc:  # noqa: BLE001
+                probes.append({
+                    "game_id": gid,
+                    "name": game.get("name"),
+                    "error": str(exc),
+                })
+        wallet_unchanged = True
+        if wallet_before and wallet_after:
+            wallet_unchanged = (
+                wallet_before.balance == wallet_after.balance
+                and wallet_before.bonus == wallet_after.bonus
+            )
+        if wallet_unchanged and probes:
+            findings.append({
+                "id": "fp-high-ev-unchanged",
+                "title": "Wallet unchanged after opening high-EV game sessions",
+                "severity": "info",
+                "evidence": {
+                    "probes": len(probes),
+                    "wallet_before": wallet_before.model_dump() if wallet_before else None,
+                    "wallet_after": wallet_after.model_dump() if wallet_after else None,
+                },
+            })
+        return {
+            "platform": self.platform,
+            "probe_kind": "high_ev_session",
+            "note": "Opened game sessions via POST /casino/game/launch; wallet compared before/after.",
+            "wallet_before": wallet_before.model_dump() if wallet_before else None,
+            "wallet_after": wallet_after.model_dump() if wallet_after else None,
+            "wallet_unchanged": wallet_unchanged,
+            "discovery_count": discovery.get("count", 0),
+            "term_hits": discovery.get("term_hits", {}),
+            "probed": len(probes),
+            "probes": probes,
+            "findings": findings,
+        }
+
+    def run_bonus_multiplier_lab(
+        self,
+        *,
+        game_id: int | str,
+        stake_brl: float = DEFAULT_LAB_STAKE_BRL,
+        use_bonus_balance: bool = False,
+        mode: str = "REAL",
+        confirm_real_bet: bool = False,
+        poll_seconds: int = 30,
+        poll_interval: float = 2.0,
+        clicks: int = 1,
+    ) -> dict[str, Any]:
+        """
+        Lab: open game session on 4play → arm stake → auto-bet via browser → poll wallet.
+
+        With confirm_real_bet=True: launches the game session in headless Chromium
+        and clicks the spin/bet button N times via integrity.player.inspect_launch.
+        Falls back to wallet-only polling if the browser click fails or clicks=0.
+        """
+        if not self.token:
+            raise PermissionError("Token necessário para bonus multiplier lab")
+        stake = min(max(float(stake_brl or DEFAULT_LAB_STAKE_BRL), 0.0), MAX_LAB_STAKE_BRL)
+        if stake <= 0:
+            raise ValueError("stake_brl deve ser > 0")
+
+        gates: list[str] = []
+        steps: list[dict[str, Any]] = []
+        wallet_start = self.get_wallet_snapshot()
+
+        # 1) Launch session
+        launch: dict[str, Any] = {}
+        try:
+            launch = self.start_game(
+                game_id,
+                mode=mode,
+                use_bonus_balance=use_bonus_balance,
+            )
+            steps.append({
+                "step": "start_game",
+                "ok": True,
+                "game_id": game_id,
+                "use_bonus_balance": use_bonus_balance,
+                "provider_url": launch.get("url", ""),
+            })
+        except Exception as exc:  # noqa: BLE001
+            steps.append({"step": "start_game", "ok": False, "error": str(exc)[:300]})
+            gates.append("start_game_failed")
+
+        time.sleep(1.0)
+        wallet_after_redeem = self.get_wallet_snapshot()
+
+        # 2) Arm stake / auto-bet via browser / poll
+        bet_armed = bool(confirm_real_bet and launch.get("url"))
+        if confirm_real_bet and not launch.get("url"):
+            gates.append("provider_url_missing")
+        available = max(wallet_start.balance, 0.0) + (
+            max(wallet_start.bonus, 0.0) if use_bonus_balance else 0.0
+        )
+        if confirm_real_bet and available < stake:
+            gates.append("bet_blocked_insufficient_funds")
+            bet_armed = False
+        if not confirm_real_bet:
+            gates.append("bet_not_confirmed")
+
+        # Browser-based auto-bet: click spin N times in the launched game
+        auto_bet_result: dict[str, Any] = {}
+        if bet_armed and clicks > 0:
+            salsa_url = str(launch.get("url") or "")
+            if salsa_url:
+                try:
+                    from src.integrity.player import inspect_launch
+
+                    auto_bet_result = inspect_launch(
+                        salsa_url,
+                        click_spin=True,
+                        clicks=max(1, min(int(clicks), self.AUTO_BET_MAX_CLICKS)),
+                        timeout_ms=45000,
+                    )
+                    n_clicks = int(auto_bet_result.get("clicks") or 0)
+                    auto_bet_result["ok"] = n_clicks > 0
+                    steps.append({"step": "auto_bet_browser", **auto_bet_result})
+                    if n_clicks > 0:
+                        gates.append(f"auto_bet_clicks={n_clicks}")
+                    else:
+                        gates.append("auto_bet_no_clicks")
+                except Exception as exc:  # noqa: BLE001
+                    gates.append(f"auto_bet_error={str(exc)[:200]}")
+            else:
+                gates.append("auto_bet_no_salsa_url")
+
+        poll: dict[str, Any] = {"ran": False}
+        if bet_armed and poll_seconds > 0:
+            poll = self._poll_wallet_delta(
+                seconds=min(int(poll_seconds), 120),
+                interval=poll_interval,
+            )
+            steps.append({"step": "wallet_poll", **poll})
+
+        auto_bet_ok = bool(auto_bet_result.get("ok"))
+        auto_bet_note = (
+            f"Auto-bet via browser: {'OK' if auto_bet_ok else 'not executed/failed'}"
+            + (f" ({auto_bet_result.get('clicks')} clicks)" if auto_bet_result.get("clicks") else "")
+            + f". Stake ≤ R$ {stake:.2f}."
+        )
+
+        findings: list[dict[str, Any]] = []
+        if auto_bet_ok:
+            findings.append({
+                "id": "fp-auto-bet-executed",
+                "title": f"Auto-bet placed {auto_bet_result.get('clicks')} spin(s) via browser",
+                "severity": "high",
+                "rationale": (
+                    f"Browser clicked spin {auto_bet_result.get('clicks')}x "
+                    f"in game {game_id} (method={auto_bet_result.get('method')})"
+                ),
+                "evidence": auto_bet_result,
+            })
+        if poll.get("changed"):
+            findings.append({
+                "id": "fp-bonus-lab-wallet-changed",
+                "title": "Wallet changed during bonus multiplier lab",
+                "severity": "medium",
+                "rationale": (
+                    f"Δbalance={poll.get('balance_delta')} "
+                    f"Δbonus={poll.get('bonus_delta')} "
+                    f"em {poll.get('elapsed_s')}s"
+                ),
+                "evidence": poll,
+            })
+
+        return {
+            "platform": self.platform,
+            "lab": "bonus_multiplier",
+            "auto_bet_implemented": True,
+            "auto_bet_ok": auto_bet_ok,
+            "auto_bet_note": auto_bet_note,
+            "auto_bet_result": auto_bet_result,
+            "stake_brl": stake,
+            "max_lab_stake_brl": MAX_LAB_STAKE_BRL,
+            "game_id": game_id,
+            "confirm_redeem": False,
+            "confirm_real_bet": confirm_real_bet,
+            "bet_armed": bet_armed,
+            "use_bonus_balance": use_bonus_balance,
+            "gates": gates,
+            "wallet_start": wallet_start.model_dump(),
+            "wallet_after_redeem": wallet_after_redeem.model_dump(),
+            "wallet_end": poll.get("wallet_after"),
+            "available_for_stake": available,
+            "provider_url": launch.get("url", ""),
+            "salsa_url": launch.get("url", ""),
+            "steps": steps,
+            "findings": findings,
+            "ok": bool(auto_bet_ok or bet_armed),
+        }
+
+    def _poll_wallet_delta(
+        self,
+        *,
+        seconds: int = 10,
+        interval: float = 2.0,
+    ) -> dict[str, Any]:
+        """Poll wallet for `seconds` at `interval` spacing; return delta summary."""
+        wallet_before = self.get_wallet_snapshot()
+        samples: list[dict[str, Any]] = []
+        deadline = time.monotonic() + max(0, int(seconds))
+        changed = False
+        while time.monotonic() < deadline:
+            time.sleep(max(0.2, float(interval)))
+            snap = self.get_wallet_snapshot()
+            samples.append({
+                "balance": snap.balance,
+                "bonus": snap.bonus,
+                "rollover": snap.rollover,
+            })
+            if snap.balance != wallet_before.balance or snap.bonus != wallet_before.bonus:
+                changed = True
+        wallet_after = self.get_wallet_snapshot()
+        return {
+            "ran": True,
+            "elapsed_s": seconds,
+            "changed": changed,
+            "balance_delta": wallet_after.balance - wallet_before.balance,
+            "bonus_delta": wallet_after.bonus - wallet_before.bonus,
+            "samples": samples,
+            "wallet_before": wallet_before.model_dump(),
+            "wallet_after": wallet_after.model_dump(),
+        }
+
+def _as_float(value: Any) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _first_number(item: dict[str, Any], keys: tuple[str, ...]) -> Optional[float]:
@@ -523,13 +932,6 @@ def _first_number(item: dict[str, Any], keys: tuple[str, ...]) -> Optional[float
 def _first_int(item: dict[str, Any], keys: tuple[str, ...]) -> Optional[int]:
     value = _first_number(item, keys)
     return int(value) if value is not None else None
-
-
-def _as_float(value: Any) -> float:
-    try:
-        return float(value or 0)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def _looks_numeric_id(value: Any) -> bool:
@@ -557,8 +959,6 @@ def _match_casino_item(
 
 
 def _extract_launch_url(payload: Any, *, depth: int = 0) -> str:
-    if depth > 4:
-        return ""
     if isinstance(payload, str) and payload.startswith("http"):
         return payload
     if not isinstance(payload, dict):
@@ -602,4 +1002,5 @@ def json_dumps(payload: dict[str, Any]) -> str:
     import json
 
     return json.dumps(payload, ensure_ascii=False)
+
 

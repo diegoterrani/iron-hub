@@ -1,0 +1,49 @@
+# Scraper registry config (optional override).
+#
+# The registry (src/scrapers/registry.py) ships with built-in defaults for
+# every platform. This file lets you tweak class / mode / delay / aliases /
+# kwargs without touching code. Omitting a platform here keeps the built-in
+# default. `class` must be a scraper class name exported by src/scrapers.
+
+scrapers:
+  bet365:
+    class: Bet365Scraper
+    mode: html
+    delay: 0.0
+    aliases: [bet365.com.br, bet365br]
+
+  betway:
+    class: BetwayScraper
+    mode: html
+    delay: 0.0
+    aliases: [betway.com.br, betwaybr]
+
+  "888":
+    class: EightEightEightScraper
+    mode: html
+    delay: 0.0
+    aliases: [888.com.br, 888br, 888bet]
+
+  4play:
+    class: FourPlayScraper
+    mode: api
+    delay: 0.3
+    aliases: [4play.game, 4play_game, 4play.com.br]
+
+  4play_bet_br:
+    class: FourPlayBrScraper
+    mode: api
+    delay: 0.2
+    aliases: [4play.bet.br, 4playbr, 4play_br]
+
+  pagol_bet_br:
+    class: PagolScraper
+    mode: api
+    delay: 0.2
+    aliases: [pagol, pagol.bet.br]
+
+  generic:
+    class: GenericPromoScraper
+    mode: html
+    delay: 0.0
+    aliases: []

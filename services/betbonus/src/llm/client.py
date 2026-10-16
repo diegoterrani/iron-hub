@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -251,7 +252,7 @@ def load_iron_llm_config() -> LLMConfig:
         is_local = model == LOCAL_27B_MODEL
 
     if is_local:
-        api_key = ""
+        api_key = pick("LOCAL_LLM_API_KEY", "LLM_API_KEY")
         api_base = pick("LLM_API_BASE") or LOCAL_27B_API_BASE
     else:
         api_key = pick("OPENROUTER_API_KEY", "OPENROUTERKEY", "LLM_API_KEY")
@@ -288,6 +289,10 @@ class IronLLMClient:
     def __init__(self, config: Optional[LLMConfig] = None):
         self.config = config or load_iron_llm_config()
 
+    # Retry config: max attempts and base delay for exponential backoff
+    _RETRY_MAX_ATTEMPTS = 3
+    _RETRY_BASE_DELAY = 2.0  # seconds
+
     def complete(
         self,
         messages: list[dict[str, str]],
@@ -296,17 +301,22 @@ class IronLLMClient:
         max_tokens: int = 1200,
         timeout: float = 60.0,
         json_mode: bool = False,
+        max_retries: int = 0,
     ) -> ChatResult:
         if not self.config.configured:
             raise RuntimeError(
                 "LLM não configurada — defina OPENROUTER_API_KEY/STRIX_LLM "
                 "(compartilhado com Maverick) ou BetBonusAI/.env"
             )
+        # Local models (llama.cpp) are slower — bump default timeout
+        if self.config.local and timeout <= 60.0:
+            timeout = 180.0
         headers: dict[str, str] = {
             "Content-Type": "application/json",
         }
-        if not self.config.local:
+        if self.config.api_key:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
+        if not self.config.local:
             headers["HTTP-Referer"] = self.config.http_referer
             headers["X-Title"] = self.config.app_title
         cap = int(self.config.max_tokens or max_tokens)
@@ -319,18 +329,40 @@ class IronLLMClient:
         if json_mode:
             payload["response_format"] = {"type": "json_object"}
 
-        def _post(body: dict[str, Any]) -> httpx.Response:
+        attempts = max(1, max_retries + 1)
+        last_exc: Exception | None = None
+        for attempt in range(attempts):
+            try:
+                return self._do_post(payload, headers, timeout)
+            except (httpx.TimeoutException, httpx.ConnectError, httpx.ReadError) as exc:
+                last_exc = exc
+                if attempt < attempts - 1:
+                    delay = self._RETRY_BASE_DELAY * (2 ** attempt)
+                    time.sleep(delay)
+                    continue
+                raise RuntimeError(
+                    f"LLM timeout after {attempts} attempts: {exc}"
+                ) from exc
+
+    def _do_post(
+        self, payload: dict[str, Any], headers: dict[str, str], timeout: float
+    ) -> ChatResult:
+        """Single POST attempt (extracted for retry loop)."""
+        with httpx.Client(timeout=timeout) as client:
+            resp = client.post(
+                f"{self.config.api_base}/chat/completions",
+                headers=headers,
+                json=payload,
+            )
+        # Fallback: some models reject response_format — retry without it
+        if resp.status_code >= 400 and "response_format" in payload:
+            payload = {k: v for k, v in payload.items() if k != "response_format"}
             with httpx.Client(timeout=timeout) as client:
-                return client.post(
+                resp = client.post(
                     f"{self.config.api_base}/chat/completions",
                     headers=headers,
-                    json=body,
+                    json=payload,
                 )
-
-        resp = _post(payload)
-        if resp.status_code >= 400 and json_mode:
-            payload.pop("response_format", None)
-            resp = _post(payload)
         if resp.status_code >= 400:
             raise RuntimeError(f"LLM HTTP {resp.status_code}: {resp.text[:400]}")
         data = resp.json()
@@ -355,6 +387,7 @@ class IronLLMClient:
         max_tokens: int = 1200,
         timeout: float = 60.0,
         json_mode: bool = False,
+        max_retries: int = 0,
     ) -> str:
         return self.complete(
             messages,
@@ -362,6 +395,7 @@ class IronLLMClient:
             max_tokens=max_tokens,
             timeout=timeout,
             json_mode=json_mode,
+            max_retries=max_retries,
         ).text
 
     def ping(self) -> dict[str, Any]:

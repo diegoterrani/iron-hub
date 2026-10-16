@@ -20,6 +20,13 @@ from src.scrapers.pagol_scraper import PagolScraper
 DEFAULT_MIN_WITHDRAW = FourPlayScraper.MIN_WITHDRAW_AMOUNT
 PAGOL_MIN_WITHDRAW = PagolScraper.MIN_WITHDRAW_AMOUNT
 
+# Per-platform default withdraw method (used when no HouseProfile is cached).
+PLATFORM_DEFAULT_WITHDRAW_METHOD: dict[str, str] = {
+    "4play": "tft",
+    "4play_bet_br": "tft",
+    "pagol_bet_br": "PIX",
+}
+
 
 def classify_conversion(
     wallet: WalletSnapshot,
@@ -74,6 +81,9 @@ def classify_conversion(
         if wallet.platform == "4play":
             min_wd = DEFAULT_MIN_WITHDRAW
             currency = "CRC"
+            methods = ["tft", "dtr"]
+        elif wallet.platform == "4play_bet_br":
+            methods = ["tft", "dtr"]
         elif wallet.platform == "pagol_bet_br":
             min_wd = PAGOL_MIN_WITHDRAW
             currency = "BRL"
@@ -144,6 +154,53 @@ class WithdrawalOracle:
         snap = classify_conversion(wallet, account_bonuses=n, profile=self.profile)
         return snap
 
+    def _resolve_game_id(self) -> Optional[int | str]:
+        """Resolve a valid game ID for bonus conversion, house-agnostic.
+
+        Tries in order:
+        1. scraper.default_game_id (if set)
+        2. list_casino_games (crash category preferred)
+        3. list_wagering_game_ids
+        4. _get_json("/casino/games?category=crash&limit=1") fallback
+        """
+        gid = getattr(self.scraper, "default_game_id", None)
+        if gid:
+            return gid
+
+        # Try list_casino_games with crash category
+        if hasattr(self.scraper, "list_casino_games"):
+            try:
+                games = self.scraper.list_casino_games(page=1, per_page=5)
+                items = games.get("items") or games.get("data") or []
+                if isinstance(items, list) and items:
+                    g = items[0]
+                    return g.get("id") or g.get("gameId") or g.get("game_id")
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Try list_wagering_game_ids
+        if hasattr(self.scraper, "list_wagering_game_ids"):
+            try:
+                ids = self.scraper.list_wagering_game_ids()
+                if isinstance(ids, list) and ids:
+                    return ids[0]
+            except Exception:  # noqa: BLE001
+                pass
+
+        # Fallback: direct API call (4play-style)
+        if hasattr(self.scraper, "_get_json"):
+            try:
+                resp = self.scraper._get_json(
+                    "/casino/games", params={"category": "Crash", "page": 1, "perPage": 1}
+                )
+                items = resp.get("items") or []
+                if items:
+                    return items[0].get("id")
+            except Exception:  # noqa: BLE001
+                pass
+
+        return None
+
     def _try_convert_bonus(
         self,
         before: WalletSnapshot,
@@ -164,7 +221,9 @@ class WithdrawalOracle:
         if gid is None:
             gid = getattr(self.scraper, "default_game_id", None)
         if gid is None:
-            gid = 1
+            gid = self._resolve_game_id()
+        if gid is None:
+            return before, ["no_valid_game_id_for_bonus_conversion"]
 
         try:
             self.scraper.start_game(
@@ -228,6 +287,35 @@ class WithdrawalOracle:
         if use_max_available:
             amount = self.resolve_max_amount(before.balance, max_amount, cents=uses_cents)
             gates.append(f"use_max_available={amount}")
+
+        # Min-withdraw gate: if the resolved amount is below the platform's
+        # minimum withdrawal threshold, block the attempt to avoid noisy
+        # denials. The caller can override by passing an explicit `amount`.
+        min_wd: Optional[float] = (
+            self.profile.min_withdraw
+            if self.profile
+            else (
+                DEFAULT_MIN_WITHDRAW
+                if getattr(self.scraper, "platform", "") in ("4play", "4play_bet_br")
+                else PAGOL_MIN_WITHDRAW
+                if getattr(self.scraper, "platform", "") == "pagol_bet_br"
+                else None
+            )
+        )
+        if min_wd is not None and amount > 0 and amount < min_wd:
+            gates.append(f"below_min_withdraw={min_wd}")
+            return WithdrawOracleResult(
+                ok=False,
+                attempted=False,
+                status=ConversionStatus.BLOCKED,
+                message=(
+                    f"Amount {amount} below min_withdraw {min_wd} — "
+                    "withdraw would be denied by house policy"
+                ),
+                amount=amount,
+                wallet_before=before,
+                gates=gates + ["min_withdraw_gate"],
+            )
 
         if not confirm_real_withdraw:
             return WithdrawOracleResult(
@@ -316,6 +404,38 @@ class WithdrawalOracle:
                             gates.append("withdrawal_allowed=false")
                 except Exception as exc:  # noqa: BLE001
                     gates.append(f"preflight_error={exc}")
+        else:
+            # No profile (or profile has no methods) — use platform default
+            platform = str(getattr(self.scraper, "platform", "") or "")
+            default_method = PLATFORM_DEFAULT_WITHDRAW_METHOD.get(platform)
+            if default_method:
+                # Map generic/foreign method names to the platform's valid method
+                if method.lower() in {"tft", "dtr", "pix", "preflight", "", "auto"}:
+                    withdraw_method = default_method
+                else:
+                    withdraw_method = method
+                gates.append(f"platform_default_method={withdraw_method}")
+
+        # Guard: if the house already has open/denied withdrawals, the BO
+        # will likely deny a new one. Short-circuit to avoid the denial loop.
+        if hasattr(self.scraper, "withdraw_preflight"):
+            try:
+                pre = self.scraper.withdraw_preflight()
+                if isinstance(pre, dict):
+                    if pre.get("have_opened") is True:
+                        gates.append("have_opened_withdraw=true")
+                    if pre.get("withdrawal_allowed") is False:
+                        return WithdrawOracleResult(
+                            ok=False,
+                            attempted=False,
+                            status=ConversionStatus.BLOCKED,
+                            message="withdrawal_allowed=false (house policy)",
+                            amount=amount,
+                            wallet_before=before,
+                            gates=gates + ["withdrawal_not_allowed"],
+                        )
+            except Exception:  # noqa: BLE001
+                pass
 
         try:
             payload = self.scraper.withdraw(

@@ -107,6 +107,7 @@ class IntegrityPlanner:
                 temperature=0.1,
                 max_tokens=700,
                 json_mode=True,
+                max_retries=2,
             )
             parsed = extract_json(content)
         except Exception as exc:  # noqa: BLE001

@@ -3,9 +3,10 @@ import { HOUSE_LABEL } from '../../lib/casino'
 
 interface Props {
   pipeline: PipelineState
+  onHistoryClick: () => void
 }
 
-export default function TopBar({ pipeline }: Props) {
+export default function TopBar({ pipeline, onHistoryClick }: Props) {
   const { opsStatus, currentPhase, loading, error } = pipeline
 
   const houses = opsStatus?.houses ?? []
@@ -68,6 +69,10 @@ export default function TopBar({ pipeline }: Props) {
           <span className="text-[10px] text-[#6b7f94] uppercase">Phase</span>
           <span className="text-[11px] font-mono text-[#00e5ff]">{currentPhase}</span>
         </div>
+
+        <button className="btn text-[11px] !px-3 !py-1 ml-2" onClick={onHistoryClick}>
+          📋 Histórico
+        </button>
       </div>
     </header>
   )

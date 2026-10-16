@@ -654,7 +654,11 @@ def slots_provider_map(house: HouseAdapter, spec: ScenarioSpec, ctx: WorkerConte
 
 
 def slots_lab_play(house: HouseAdapter, spec: ScenarioSpec, ctx: WorkerContext) -> ScenarioResult:
-    """1 spin emulado no iframe do provedor + medição de ledger. Sem protocolo de spin."""
+    """Stake real no iframe do provedor + medição de ledger.
+
+    Usa house.auto_bet() quando disponível (multi-click, wallet polling
+    integrada). Fallback: launch + try_player_spin (single-click).
+    """
     from src.integrity.player import try_player_spin
 
     if not ctx.confirm_real_bet:
@@ -680,6 +684,83 @@ def slots_lab_play(house: HouseAdapter, spec: ScenarioSpec, ctx: WorkerContext) 
             vulnerability="lab_play_simulated",
             evidence={"game_id": gid, "simulated": True},
         )
+
+    auto_bet_fn = getattr(house, "auto_bet", None)
+    if callable(auto_bet_fn):
+        # --- Path A: house provides auto_bet (multi-click + wallet polling) ---
+        before = house.wallet_snapshot()
+        try:
+            bet = auto_bet_fn(gid, clicks=1, use_bonus=False, mode="REAL", timeout_ms=45000)
+        except Exception as exc:  # noqa: BLE001
+            return _blocked(spec, house.platform, exc)
+        last = house.wallet_snapshot()
+        delta = wallet_delta(before, last)
+        abs_cash = abs(float(delta["balance"]))
+        over_cap = abs_cash > float(ctx.max_lab_stake_brl) + 0.05
+        n_clicks = int(bet.get("clicks") or 0)
+        method = str(bet.get("method") or "")
+        salsa_err = str(bet.get("launch_error") or "")
+        empty_wallet = float(before.balance or 0) <= 0.01 and float(before.bonus or 0) <= 0.01
+        ev: dict[str, Any] = {
+            "game_id": gid,
+            "max_lab_stake_brl": ctx.max_lab_stake_brl,
+            "delta": delta,
+            "moved": delta["changed"],
+            "clicks": n_clicks,
+            "method": method,
+            "lab_wallet_empty": empty_wallet,
+            "wallet_before": bet.get("wallet_before"),
+            "wallet_after": bet.get("wallet_after"),
+            "auto_bet": True,
+        }
+        if salsa_err:
+            ev["launch_error"] = salsa_err
+        if n_clicks > 0 and delta["changed"] and over_cap:
+            sev, vuln, mode = "critical", "lab_spin_debit_above_cap", "AUTOMATED"
+            note = (
+                f"Ledger moveu R$ {delta['balance']} — acima do teto lab "
+                f"R$ {ctx.max_lab_stake_brl:.2f}. Stake default do cliente pode ser alto."
+            )
+        elif delta["changed"]:
+            sev, vuln, mode = "high", "lab_spin_wallet_moved", "AUTOMATED"
+            note = (
+                f"Spin/aposta refletiu no ledger (Δcash={delta['balance']} "
+                f"Δbonus={delta['bonus']} Δroll={delta['rollover']}). "
+                f"Conferir contribuição e maxBet."
+            )
+        elif salsa_err:
+            sev, vuln, mode = "high", "salsa_provider_launch_error", "AUTOMATED"
+            note = f"Salsa não entregou o iframe do jogo: {salsa_err}"
+            if empty_wallet:
+                note += " Carteira lab zerada."
+        elif n_clicks > 0:
+            sev, vuln, mode = "medium", "spin_clicked_wallet_unchanged", "SEMI_AUTO"
+            note = (
+                f"{n_clicks} clique(s) no provedor ({method}), carteira imóvel. "
+                "Stake default pode estar em 0, overlay de intro, ou o giro não debitou."
+            )
+            if empty_wallet:
+                note += " Carteira lab zerada — giro real não tem saldo."
+        else:
+            sev, vuln, mode = "medium", "lab_spin_iframe_not_clicked", "SEMI_AUTO"
+            note = (
+                str(bet.get("error") or "Sem alvo no iframe do provedor. ")
+                + "Spin continua SEMI_AUTO."
+            )
+            if empty_wallet:
+                note += " Carteira lab zerada."
+        return _result(
+            spec,
+            house.platform,
+            mode=mode,
+            ok=True,
+            severity=sev,
+            vulnerability=vuln,
+            note=note,
+            evidence=ev,
+        )
+
+    # --- Path B: fallback — launch + try_player_spin (single-click) ---
     before = house.wallet_snapshot()
     try:
         launch = _call_start_game(house, games[0], mode="REAL", use_bonus=False)
@@ -709,7 +790,7 @@ def slots_lab_play(house: HouseAdapter, spec: ScenarioSpec, ctx: WorkerContext) 
         sev, vuln, mode = "critical", "lab_spin_debit_above_cap", "AUTOMATED"
         note = (
             f"Ledger moveu R$ {delta['balance']} — acima do teto lab "
-            f"R$ {ctx.max_lab_stake_brl:.2f}. Stake default do cliente pode ser alto."
+            f"R$ {ctx.max_lab_stake_brl:.2f}. Stake default do cliente pode be alto."
         )
     elif moved:
         sev, vuln, mode = "high", "lab_spin_wallet_moved", "AUTOMATED"

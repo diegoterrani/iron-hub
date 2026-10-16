@@ -66,6 +66,7 @@ export const api = {
     const suffix = qs.toString() ? `?${qs}` : ''
     return request<BonusOffer[]>(`/api/bonuses${suffix}`)
   },
+  getBonus: (id: string) => request<BonusOffer>(`/api/bonuses/${id}`),
   deleteBonus: (id: string) =>
     request<{ deleted: boolean }>(`/api/bonuses/${id}`, { method: 'DELETE' }),
   clearBonuses: () => request<{ deleted: number }>('/api/bonuses', { method: 'DELETE' }),
@@ -98,6 +99,20 @@ export const api = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ platform }),
+    }),
+  runBatch: (
+    targets: Array<{ platform: string; url?: string; path?: string; source_url?: string; delay?: number; render_js?: boolean }>,
+    max_workers = 4,
+  ) =>
+    request<{
+      total: number
+      ok: number
+      offers: number
+      results: Array<{ ok: boolean; error?: string; platform: string; source_url: string; offers: BonusOffer[] }>
+    }>('/api/pipeline/batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targets, max_workers }),
     }),
   credentials: () =>
     request<
@@ -224,6 +239,7 @@ export const api = {
         note?: string
       }
       verdict?: { ok: boolean; status: string; note: string; redteam_success: boolean }
+      llm?: Record<string, unknown>
     }>('/api/abuse/evaluate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -243,9 +259,10 @@ export const api = {
     request<WithdrawOracleResult>('/api/abuse/oracle/withdraw', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ use_max_available: true, ...body }),
+      body: JSON.stringify(body),
     }),
   abuseFindings: (limit = 50) => request<unknown[]>(`/api/abuse/findings?limit=${limit}`),
+  clearAbuseFindings: () => request<{ deleted: number }>('/api/abuse/findings', { method: 'DELETE' }),
   abuseGamesHighEv: (platform = 'pagol_bet_br', maxGames = 60) =>
     request<{
       count: number
@@ -347,6 +364,9 @@ export const api = {
     run_deep_attack?: boolean
     poll_seconds?: number
     persist_findings?: boolean
+    recon_use_llm?: boolean
+    recon_refresh?: boolean
+    recon_timeout_s?: number
   }) =>
     request<{
       ok: boolean
@@ -453,6 +473,7 @@ export const api = {
         mode: string
         note?: string
       }>
+      finished_at?: string
     }>('/api/abuse/matrix/run', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -530,7 +551,7 @@ export const api = {
           rules?: Record<string, unknown>
         }
       }>
-      errors: Array<{ offer_id: string; title: string; error: string }>
+      errors: Array<{ offer_id: string; title: string; error: string; truncated?: boolean }>
     }>('/api/abuse/llm/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -606,10 +627,36 @@ export const api = {
     URL.revokeObjectURL(url)
     return { ok: true as const }
   },
+  downloadJourneyReportMdGet: async (sessionId: string) => {
+    const res = await fetch(withGateway(`/api/journey/sessions/${sessionId}/report.md`), {
+      method: 'GET',
+      credentials: 'same-origin',
+    })
+    if (!res.ok) {
+      let detail = res.statusText
+      try {
+        const bodyJson = await res.json()
+        detail = bodyJson.detail || JSON.stringify(bodyJson)
+      } catch {
+        detail = (await res.text()) || detail
+      }
+      throw new Error(detail)
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `betbonus-journey-${sessionId.slice(0, 8)}.md`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    return { ok: true as const }
+  },
   journeyPresets: () =>
-    request<Array<{ id: string; name: string; url: string; platform: string; notes: string }>>(
-      '/api/journey/presets',
-    ),
+    request<
+      Array<{ id: string; name: string; url: string; platform: string; auth: string; notes: string }>
+    >('/api/journey/presets'),
   upload: async (platform: string, file: File) => {
     const form = new FormData()
     form.append('platform', platform)
@@ -664,6 +711,10 @@ export const api = {
   integrityCatalog: () => request<IntegrityCatalog>('/api/integrity/catalog'),
   integritySims: () =>
     request<{ ok: boolean; suite: Record<string, unknown> }>('/api/integrity/sims'),
+  integrityLatest: () =>
+    request<{ ok: boolean; run: IntegrityCatalog & Record<string, unknown> | null; catalog?: IntegrityCatalog }>(
+      '/api/integrity/latest',
+    ),
   integrityRuns: (limit = 20) =>
     request<{ ok: boolean; runs: IntegrityRunSummary[] }>(`/api/integrity/runs?limit=${limit}`),
   opsStatus: () => request<OpsStatus>('/api/ops/status'),
@@ -783,10 +834,10 @@ export const api = {
     a.click()
     URL.revokeObjectURL(url)
   },
-  integrityPlan: (use_llm = true) =>
+  integrityPlan: (run_id = '', use_llm = true) =>
     request<{ ok: boolean; plan: IntegrityCatalog['planner'] }>('/api/integrity/plan', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ use_llm }),
+      body: JSON.stringify({ run_id, use_llm }),
     }),
 }

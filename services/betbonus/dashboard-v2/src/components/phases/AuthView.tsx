@@ -6,6 +6,7 @@ import { HOUSE_LABEL } from '../../lib/casino'
 interface CredRow {
   platform: string
   email: string
+  document: string
   label: string
   has_token: boolean
   token_preview: string
@@ -30,6 +31,7 @@ export default function AuthView() {
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [document, setDocument] = useState('')
   const [platform, setPlatform] = useState('pagol_bet_br')
   const [loginMsg, setLoginMsg] = useState<string | null>(null)
   const [loggingIn, setLoggingIn] = useState(false)
@@ -38,7 +40,7 @@ export default function AuthView() {
     setLoggingIn(true)
     setLoginMsg(null)
     try {
-      await api.loginPlatform(platform, { email, password })
+      await api.loginPlatform(platform, { email, password, document })
       setLoginMsg('Login successful')
       const [c] = await Promise.all([api.credentials(), api.opsStatus().then(setOps)])
       setCreds(c)
@@ -66,6 +68,7 @@ export default function AuthView() {
               <tr className="text-left text-[#6b7f94] border-b border-[#1e2d3d]">
                 <th className="pb-2 pr-4">Platform</th>
                 <th className="pb-2 pr-4">Email</th>
+                <th className="pb-2 pr-4">Document</th>
                 <th className="pb-2 pr-4">Token</th>
                 <th className="pb-2 pr-4">Preview</th>
                 <th className="pb-2">Updated</th>
@@ -74,7 +77,7 @@ export default function AuthView() {
             <tbody>
               {creds.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="py-3 text-[#4a5c6e] italic">
+                  <td colSpan={6} className="py-3 text-[#4a5c6e] italic">
                     No credentials stored
                   </td>
                 </tr>
@@ -83,6 +86,7 @@ export default function AuthView() {
                 <tr key={c.platform} className="border-b border-[#1e2d3d30]">
                   <td className="py-2 pr-4 font-mono text-[#00e5ff]">{c.platform}</td>
                   <td className="py-2 pr-4">{c.email}</td>
+                  <td className="py-2 pr-4 font-mono text-[#4a5c6e]">{c.document || '—'}</td>
                   <td className="py-2 pr-4">
                     <span
                       className="status-dot"
@@ -106,7 +110,7 @@ export default function AuthView() {
           Platform Login
         </div>
         <div className="panel-body space-y-3">
-          <div className="grid grid-cols-3 gap-3">
+          <div className="grid grid-cols-4 gap-3">
             <div>
               <span className="label">Platform</span>
               <select
@@ -128,6 +132,15 @@ export default function AuthView() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 placeholder="user@example.com"
+              />
+            </div>
+            <div>
+              <span className="label">Document (CPF)</span>
+              <input
+                className="input w-full"
+                value={document}
+                onChange={(e) => setDocument(e.target.value)}
+                placeholder="000.000.000-00"
               />
             </div>
             <div>
